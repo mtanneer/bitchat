@@ -8,7 +8,7 @@
 
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 final class MockIdentityManager: SecureIdentityStateManagerProtocol {
     private var blockedFingerprints: Set<String> = []

@@ -10,7 +10,7 @@ import Testing
 import Foundation
 import CryptoKit
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Forward-secret one-way Noise X envelopes sealed to one-time prekeys
 /// instead of the recipient's identity static key.

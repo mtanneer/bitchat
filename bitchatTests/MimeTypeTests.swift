@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - MimeType Mapping and Signature Tests
 

@@ -2,4 +2,4 @@
 DEVELOPMENT_TEAM = ABC123
 
 // Unique bundle id to be able to register and run locally
-PRODUCT_BUNDLE_IDENTIFIER = chat.bitchat.$(DEVELOPMENT_TEAM)
+PRODUCT_BUNDLE_IDENTIFIER = com.planechat.ios.$(DEVELOPMENT_TEAM)

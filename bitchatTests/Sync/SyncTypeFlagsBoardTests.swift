@@ -9,7 +9,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 /// The board sync flag is the first bit outside the original single byte of
 /// type flags. These tests pin down the wire compatibility contract: the

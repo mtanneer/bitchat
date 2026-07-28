@@ -9,7 +9,7 @@
 import Testing
 import AVFoundation
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Thread-safe: the coordinator invokes it on its private serial queue (the
 /// blocking session IPC runs off the main thread) while the test reads from

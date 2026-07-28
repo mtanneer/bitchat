@@ -11,7 +11,7 @@
 
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct CashuTokenDecoderTests {
 

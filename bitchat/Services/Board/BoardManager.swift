@@ -19,27 +19,13 @@ final class BoardManager: ObservableObject {
     @Published private(set) var posts: [BoardPostPacket] = []
 
     private let transport: Transport
-    /// Publishes a bridged kind-1 note (expiring with the board post via
-    /// NIP-40) and returns its Nostr event id, or nil when bridging failed or
-    /// was skipped.
-    private let publishToNostr: (_ content: String, _ geohash: String, _ nickname: String, _ expiresAtMs: UInt64, _ urgent: Bool) -> String?
-    /// Requests NIP-09 deletion of a previously bridged note.
-    private let deleteFromNostr: (_ eventID: String, _ geohash: String) -> Void
-    /// Bridged Nostr event ids by postID, for merged deletes. In-memory only:
-    /// after a relaunch a delete still tombstones the board copy, but the
-    /// Nostr copy is left to expire with relay retention.
-    private var bridgedEventIDs: [Data: String] = [:]
     private var cancellable: AnyCancellable?
 
     init(
         transport: Transport,
-        store: BoardStore = .shared,
-        publishToNostr: ((String, String, String, UInt64, Bool) -> String?)? = nil,
-        deleteFromNostr: ((String, String) -> Void)? = nil
+        store: BoardStore = .shared
     ) {
         self.transport = transport
-        self.publishToNostr = publishToNostr ?? Self.livePublishToNostr
-        self.deleteFromNostr = deleteFromNostr ?? Self.liveDeleteFromNostr
         cancellable = store.$postsSnapshot
             .receive(on: DispatchQueue.main)
             .sink { [weak self] snapshot in
@@ -123,12 +109,6 @@ final class BoardManager: ObservableObject {
             signature: signature
         )
         transport.sendBoardPayload(BoardWire.post(post).encode())
-
-        // Nostr bridge: geohash posts also go out as kind-1 location notes so
-        // online users see them. Remember the event id for merged deletes.
-        if !geohash.isEmpty, let eventID = publishToNostr(trimmed, geohash, cleanNickname, expiresAt, urgent) {
-            bridgedEventIDs[postID] = eventID
-        }
         return true
     }
 
@@ -149,48 +129,6 @@ final class BoardManager: ObservableObject {
             signature: signature
         )
         transport.sendBoardPayload(BoardWire.tombstone(tombstone).encode())
-
-        // Merged delete: also retract the bridged Nostr copy when we still
-        // know its event id.
-        if !post.geohash.isEmpty, let eventID = bridgedEventIDs.removeValue(forKey: post.postID) {
-            deleteFromNostr(eventID, post.geohash)
-        }
         return true
-    }
-
-    private static func livePublishToNostr(content: String, geohash: String, nickname: String, expiresAtMs: UInt64, urgent: Bool) -> String? {
-        let relays = GeoRelayDirectory.shared.closestRelays(toGeohash: geohash, count: TransportConfig.nostrGeoRelayCount)
-        guard !relays.isEmpty else {
-            SecureLogger.debug("Board: no geo relays for \(geohash); skipping Nostr bridge", category: .session)
-            return nil
-        }
-        do {
-            let identity = try NostrIdentityBridge().deriveIdentity(forGeohash: geohash)
-            let event = try NostrProtocol.createGeohashTextNote(
-                content: content,
-                geohash: geohash,
-                senderIdentity: identity,
-                nickname: nickname,
-                expiresAt: Date(timeIntervalSince1970: TimeInterval(expiresAtMs) / 1000),
-                urgent: urgent
-            )
-            NostrRelayManager.shared.sendEvent(event, to: relays)
-            return event.id
-        } catch {
-            SecureLogger.error("Board: failed to bridge post to Nostr: \(error)", category: .session)
-            return nil
-        }
-    }
-
-    private static func liveDeleteFromNostr(eventID: String, geohash: String) {
-        let relays = GeoRelayDirectory.shared.closestRelays(toGeohash: geohash, count: TransportConfig.nostrGeoRelayCount)
-        guard !relays.isEmpty else { return }
-        do {
-            let identity = try NostrIdentityBridge().deriveIdentity(forGeohash: geohash)
-            let deletion = try NostrProtocol.createDeleteEvent(ofEventID: eventID, senderIdentity: identity)
-            NostrRelayManager.shared.sendEvent(deletion, to: relays)
-        } catch {
-            SecureLogger.error("Board: failed to delete bridged Nostr note: \(error)", category: .session)
-        }
     }
 }

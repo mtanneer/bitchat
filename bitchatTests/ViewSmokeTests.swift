@@ -10,19 +10,16 @@ import UIKit
 import AppKit
 #endif
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 private func makeSmokeViewModel() -> (viewModel: ChatViewModel, transport: MockTransport, identityManager: MockIdentityManager) {
     let keychain = MockKeychain()
-    let keychainHelper = MockKeychainHelper()
-    let idBridge = NostrIdentityBridge(keychain: keychainHelper)
     let identityManager = MockIdentityManager(keychain)
     let transport = MockTransport()
 
     let viewModel = ChatViewModel(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
         transport: transport
     )
@@ -34,7 +31,6 @@ private func makeSmokeViewModel() -> (viewModel: ChatViewModel, transport: MockT
 private struct SmokeFeatureModels {
     let publicChatModel: PublicChatModel
     let appChromeModel: AppChromeModel
-    let locationChannelsModel: LocationChannelsModel
     let privateInboxModel: PrivateInboxModel
     let privateConversationModel: PrivateConversationModel
     let verificationModel: VerificationModel
@@ -44,19 +40,9 @@ private struct SmokeFeatureModels {
 }
 
 @MainActor
-private func makeSmokeLocationManager() -> LocationChannelManager {
-    let suiteName = "ViewSmokeTests.\(UUID().uuidString)"
-    let storage = UserDefaults(suiteName: suiteName) ?? .standard
-    storage.removePersistentDomain(forName: suiteName)
-    return LocationChannelManager(storage: storage)
-}
-
-@MainActor
 private func makeSmokeFeatureModels(for viewModel: ChatViewModel) -> SmokeFeatureModels {
-    let locationManager = makeSmokeLocationManager()
     let conversations = viewModel.conversations
     let publicChatModel = PublicChatModel(conversations: conversations)
-    let locationChannelsModel = LocationChannelsModel(manager: locationManager)
     let privateInboxModel = PrivateInboxModel(conversations: conversations)
     let appChromeModel = AppChromeModel(
         chatViewModel: viewModel,
@@ -64,8 +50,7 @@ private func makeSmokeFeatureModels(for viewModel: ChatViewModel) -> SmokeFeatur
     )
     let privateConversationModel = PrivateConversationModel(
         chatViewModel: viewModel,
-        conversations: conversations,
-        locationChannelsModel: locationChannelsModel
+        conversations: conversations
     )
     let verificationModel = VerificationModel(
         chatViewModel: viewModel,
@@ -78,8 +63,7 @@ private func makeSmokeFeatureModels(for viewModel: ChatViewModel) -> SmokeFeatur
     )
     let peerListModel = PeerListModel(
         chatViewModel: viewModel,
-        conversations: conversations,
-        locationChannelsModel: locationChannelsModel
+        conversations: conversations
     )
 
     let boardAlertsModel = BoardAlertsModel(
@@ -93,7 +77,6 @@ private func makeSmokeFeatureModels(for viewModel: ChatViewModel) -> SmokeFeatur
     return SmokeFeatureModels(
         publicChatModel: publicChatModel,
         appChromeModel: appChromeModel,
-        locationChannelsModel: locationChannelsModel,
         privateInboxModel: privateInboxModel,
         privateConversationModel: privateConversationModel,
         verificationModel: verificationModel,
@@ -111,7 +94,6 @@ private func installSmokeEnvironment<V: View>(
     view
         .environmentObject(featureModels.publicChatModel)
         .environmentObject(featureModels.appChromeModel)
-        .environmentObject(featureModels.locationChannelsModel)
         .environmentObject(featureModels.privateInboxModel)
         .environmentObject(featureModels.privateConversationModel)
         .environmentObject(featureModels.verificationModel)
@@ -376,118 +358,19 @@ struct ViewSmokeTests {
     }
 
     @Test
-    func commandSuggestionsAndLocationViews_render() {
-        let (viewModel, _, _) = makeSmokeViewModel()
-        let featureModels = makeSmokeFeatureModels(for: viewModel)
-        let channel = GeohashChannel(level: .city, geohash: "u4pruy")
-        var messageText = "/f"
-
-        featureModels.locationChannelsModel.select(.location(channel))
-
-        _ = mount(
-            CommandSuggestionsView(
-                messageText: Binding(
-                    get: { messageText },
-                    set: { messageText = $0 }
-                )
-            )
-            .environmentObject(featureModels.privateConversationModel)
-            .environmentObject(featureModels.locationChannelsModel)
-        )
-
-        _ = mount(
-            LocationChannelsSheet(isPresented: .constant(true))
-                .environmentObject(featureModels.locationChannelsModel)
-                .environmentObject(featureModels.peerListModel)
-        )
-
-        #expect(messageText == "/f")
-        featureModels.locationChannelsModel.select(.mesh)
-        featureModels.locationChannelsModel.endLiveRefresh()
-    }
-
-    @Test
-    func noticesView_rendersNoRelayAndLoadedStates() throws {
+    func noticesView_rendersMeshBoard() {
         let (viewModel, transport, _) = makeSmokeViewModel()
-        let featureModels = makeSmokeFeatureModels(for: viewModel)
-        featureModels.locationChannelsModel.select(.location(GeohashChannel(level: .building, geohash: "u4pruydq")))
-        defer { featureModels.locationChannelsModel.select(.mesh) }
         let board = BoardManager(
             transport: transport,
-            store: BoardStore(persistsToDisk: false, fileURL: nil, now: { Date() }),
-            publishToNostr: { _, _, _, _, _ in nil },
-            deleteFromNostr: { _, _ in }
+            store: BoardStore(persistsToDisk: false, fileURL: nil, now: { Date() })
         )
-
-        let noRelayManager = LocationNotesManager(
-            geohash: "u4pruydq",
-            dependencies: LocationNotesDependencies(
-                relayLookup: { _, _ in [] },
-                subscribe: { _, _, _, _, _ in },
-                unsubscribe: { _ in },
-                sendEvent: { _, _ in },
-                deriveIdentity: { _ in try NostrIdentity.generate() },
-                now: { Date() }
-            )
-        )
-
-        var noteHandler: ((NostrEvent) -> Void)?
-        var eose: (() -> Void)?
-        let loadedManager = LocationNotesManager(
-            geohash: "u4pruydq",
-            dependencies: LocationNotesDependencies(
-                relayLookup: { _, _ in ["wss://relay.one"] },
-                subscribe: { _, _, _, handler, onEOSE in
-                    noteHandler = handler
-                    eose = onEOSE
-                },
-                unsubscribe: { _ in },
-                sendEvent: { _, _ in },
-                deriveIdentity: { _ in try NostrIdentity.generate() },
-                now: { Date() }
-            )
-        )
-
-        let identity = try NostrIdentity.generate()
-        let event = try NostrEvent(
-            pubkey: identity.publicKeyHex,
-            createdAt: Date(),
-            kind: .textNote,
-            tags: [["g", "u4pruydq"], ["n", "Builder"]],
-            content: "hello from a note"
-        ).sign(with: identity.schnorrSigningKey())
-        noteHandler?(event)
-        eose?()
 
         _ = mount(
             NoticesView(
                 senderNickname: viewModel.nickname,
-                board: board,
-                initialTab: .geo,
-                notesManager: noRelayManager
+                board: board
             )
-            .environmentObject(featureModels.locationChannelsModel)
         )
-        _ = mount(
-            NoticesView(
-                senderNickname: viewModel.nickname,
-                board: board,
-                initialTab: .geo,
-                notesManager: loadedManager
-            )
-            .environmentObject(featureModels.locationChannelsModel)
-        )
-        _ = mount(
-            NoticesView(
-                senderNickname: viewModel.nickname,
-                board: board,
-                initialTab: .mesh
-            )
-            .environmentObject(featureModels.locationChannelsModel)
-        )
-
-        #expect(loadedManager.notes.count == 1)
-        #expect(noRelayManager.state == .noRelays)
     }
 
     @Test
@@ -498,10 +381,7 @@ struct ViewSmokeTests {
             description: "app_info.features.encryption.description"
         )
 
-        // AppInfoView's settings pane reads LocationChannelsModel from the
-        // environment, so it can only render mounted with one installed.
         let appInfo = AppInfoView()
-            .environmentObject(LocationChannelsModel(manager: makeSmokeLocationManager()))
         let header = SectionHeader("app_info.features.title")
         let featureRow = FeatureRow(info: feature)
         let paymentCashu = PaymentChipView(paymentType: .cashu("cashuA_test-token"))
@@ -552,12 +432,9 @@ struct ViewSmokeTests {
     }
 
     @Test
-    func geohashAndTextMessageViews_renderCoreBranches() {
+    func textMessageViews_renderCoreBranches() {
         let (viewModel, _, _) = makeSmokeViewModel()
         let featureModels = makeSmokeFeatureModels(for: viewModel)
-        let geohashPeopleList = GeohashPeopleList(
-            onTapPerson: {}
-        )
         let truncatableMessage = BitchatMessage(
             sender: viewModel.nickname,
             content: String(repeating: "verylongtoken ", count: 160),
@@ -576,8 +453,6 @@ struct ViewSmokeTests {
             deliveryStatus: .partiallyDelivered(reached: 1, total: 2)
         )
 
-        _ = mount(geohashPeopleList.environmentObject(featureModels.peerListModel))
-        _ = mount(geohashPeopleList.environmentObject(featureModels.peerListModel))
         _ = mount(TextMessageView(message: truncatableMessage).environmentObject(featureModels.conversationUIModel))
         _ = mount(TextMessageView(message: paymentMessage).environmentObject(featureModels.conversationUIModel))
 

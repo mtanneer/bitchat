@@ -9,7 +9,7 @@
 import Foundation
 import CryptoKit
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 final class TestHelpers {
 
@@ -119,9 +119,9 @@ extension ChatViewModel {
     /// `ConversationStore` intents (upsert keeps re-seeding with updated
     /// copies working the way the old array assignment did).
     @MainActor
-    func seedPublicMessages(_ messages: [BitchatMessage], for channel: ChannelID = .mesh) {
+    func seedPublicMessages(_ messages: [BitchatMessage]) {
         for message in messages {
-            conversations.upsertByID(message, in: ConversationID(channelID: channel))
+            conversations.upsertByID(message, in: .mesh)
         }
     }
 

@@ -27,21 +27,15 @@ protocol ChatComposerContext: AnyObject {
     // MARK: Identity & channel state
     var nickname: String { get }
     var myPeerID: PeerID { get }
-    var activeChannel: ChannelID { get }
     /// The transport's own nickname (excluded from autocomplete candidates).
     var meshNickname: String { get }
     func meshPeerNicknames() -> [PeerID: String]
-
-    // MARK: Geohash identity (shared with the other contexts)
-    var geoNicknames: [String: String] { get }
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity
 }
 
 extension ChatViewModel: ChatComposerContext {
     // `autocompleteSuggestions`, `autocompleteRange`, `showAutocomplete`,
-    // `selectedAutocompleteIndex`, `nickname`, `myPeerID`, `activeChannel`,
-    // `geoNicknames`, `meshPeerNicknames()`, and
-    // `deriveNostrIdentity(forGeohash:)` are shared requirements with the
+    // `selectedAutocompleteIndex`, `nickname`, `myPeerID`, and
+    // `meshPeerNicknames()` are shared requirements with the
     // other contexts or satisfied by existing `ChatViewModel` members. The
     // members below flatten nested service accesses into intent-named calls.
 
@@ -133,21 +127,7 @@ final class ChatComposerCoordinator {
 
 private extension ChatComposerCoordinator {
     func autocompleteCandidates() -> [String] {
-        switch context.activeChannel {
-        case .mesh:
-            let values = context.meshPeerNicknames().values
-            return Array(values.filter { $0 != context.meshNickname })
-
-        case .location(let channel):
-            var tokens = Set<String>()
-            for (pubkey, nick) in context.geoNicknames {
-                tokens.insert("\(nick)#\(pubkey.suffix(4))")
-            }
-            if let identity = try? context.deriveNostrIdentity(forGeohash: channel.geohash) {
-                let myToken = context.nickname + "#" + String(identity.publicKeyHex.suffix(4))
-                tokens.remove(myToken)
-            }
-            return Array(tokens)
-        }
+        let values = context.meshPeerNicknames().values
+        return Array(values.filter { $0 != context.meshNickname })
     }
 }

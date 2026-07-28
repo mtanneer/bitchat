@@ -9,7 +9,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct ChatViewModelRefactoringTests {
 
@@ -17,14 +17,11 @@ struct ChatViewModelRefactoringTests {
     @MainActor
     private func makePinnedViewModel() -> (viewModel: ChatViewModel, transport: MockTransport, identity: MockIdentityManager) {
         let keychain = MockKeychain()
-        let keychainHelper = MockKeychainHelper()
-        let idBridge = NostrIdentityBridge(keychain: keychainHelper)
         let identityManager = MockIdentityManager(keychain)
         let transport = MockTransport()
 
         let viewModel = ChatViewModel(
             keychain: keychain,
-            idBridge: idBridge,
             identityManager: identityManager,
             transport: transport
         )
@@ -138,7 +135,7 @@ struct ChatViewModelRefactoringTests {
         // Wait for async processing with proper timeout
         let found = await TestHelpers.waitUntil(
             {
-                viewModel.publicMessages(for: .mesh).contains(where: { $0.content == "Public Hi" })
+                viewModel.messages.contains(where: { $0.content == "Public Hi" })
             },
             timeout: TestConstants.defaultTimeout
         )

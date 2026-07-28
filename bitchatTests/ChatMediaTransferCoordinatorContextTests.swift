@@ -16,7 +16,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 
@@ -29,7 +29,6 @@ private final class MockChatMediaTransferContext: ChatMediaTransferContext {
     var selectedPrivateChatPeer: PeerID?
     var nickname = "me"
     var myPeerID = PeerID(str: "0011223344556677")
-    var activeChannel: ChannelID = .mesh
     var nicknamesByPeerID: [PeerID: String] = [:]
 
     func nicknameForPeer(_ peerID: PeerID) -> String {

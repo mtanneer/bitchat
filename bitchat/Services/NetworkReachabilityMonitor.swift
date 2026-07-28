@@ -112,7 +112,7 @@ final class NWPathReachabilityMonitor: NetworkReachabilityMonitoring {
 
     #if canImport(Network)
     private var monitor: NWPathMonitor?
-    private let monitorQueue = DispatchQueue(label: "chat.bitchat.reachability")
+    private let monitorQueue = DispatchQueue(label: "chat.planechat.reachability")
     #endif
 
     init(debounceInterval: TimeInterval = 2.5, now: @escaping () -> Date = Date.init) {

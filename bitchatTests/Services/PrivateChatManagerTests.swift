@@ -10,7 +10,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct PrivateChatManagerTests {
 
@@ -183,8 +183,7 @@ struct PrivateChatManagerTests {
         let transport = MockTransport()
         let (manager, store) = Self.makeManager(transport: transport)
         let identityManager = MockIdentityManager(MockKeychain())
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let unifiedPeerService = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: identityManager)
+        let unifiedPeerService = UnifiedPeerService(meshService: transport, identityManager: identityManager)
         manager.unifiedPeerService = unifiedPeerService
 
         let peerID = PeerID(str: "0123456789abcdef")

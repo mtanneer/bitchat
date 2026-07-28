@@ -20,7 +20,6 @@ protocol ChatMediaTransferContext: AnyObject {
     var selectedPrivateChatPeer: PeerID? { get }
     var nickname: String { get }
     var myPeerID: PeerID { get }
-    var activeChannel: ChannelID { get }
     func nicknameForPeer(_ peerID: PeerID) -> String
     func currentPublicSender() -> (name: String, peerID: PeerID)
 
@@ -50,7 +49,7 @@ protocol ChatMediaTransferContext: AnyObject {
 
 extension ChatViewModel: ChatMediaTransferContext {
     // `canSendMediaInCurrentContext`, `selectedPrivateChatPeer`, `nickname`,
-    // `myPeerID`, `activeChannel`, `nicknameForPeer(_:)`,
+    // `myPeerID`, `nicknameForPeer(_:)`,
     // `currentPublicSender()`,
     // `appendPublicMessage(_:to:)`, `removeMessage(withID:cleanupFile:)`,
     // `addSystemMessage(_:)`, `notifyUIChanged()`,
@@ -244,7 +243,7 @@ final class ChatMediaTransferCoordinator {
                 senderPeerID: senderPeerID,
                 deliveryStatus: .sending
             )
-            context.appendPublicMessage(message, to: ConversationID(channelID: context.activeChannel))
+            context.appendPublicMessage(message, to: .mesh)
         }
 
         let key = context.normalizedContentKey(message.content)

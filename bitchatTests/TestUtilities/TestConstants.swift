@@ -7,7 +7,7 @@
 //
 
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct TestConstants {
     static let defaultTimeout: TimeInterval = 5.0

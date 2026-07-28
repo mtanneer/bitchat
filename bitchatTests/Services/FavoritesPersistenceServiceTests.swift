@@ -1,11 +1,11 @@
 import XCTest
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 final class FavoritesPersistenceServiceTests: XCTestCase {
-    private let storageKey = "chat.bitchat.favorites"
-    private let serviceKey = "chat.bitchat.favorites"
+    private let storageKey = "chat.planechat.favorites"
+    private let serviceKey = "chat.planechat.favorites"
 
     func test_addFavorite_persistsAndPostsNotification() throws {
         let keychain = MockKeychain()
@@ -13,7 +13,7 @@ final class FavoritesPersistenceServiceTests: XCTestCase {
         let peerKey = Data((0..<32).map(UInt8.init))
         let expectation = expectation(forNotification: .favoriteStatusChanged, object: nil)
 
-        service.addFavorite(peerNoisePublicKey: peerKey, peerNostrPublicKey: "npub1alice", peerNickname: "Alice")
+        service.addFavorite(peerNoisePublicKey: peerKey, peerNickname: "Alice")
 
         wait(for: [expectation], timeout: 1.0)
         XCTAssertTrue(service.isFavorite(peerKey))
@@ -68,7 +68,7 @@ final class FavoritesPersistenceServiceTests: XCTestCase {
         let service = FavoritesPersistenceService(keychain: MockKeychain())
         let peerKey = Data((96..<128).map(UInt8.init))
 
-        service.addFavorite(peerNoisePublicKey: peerKey, peerNostrPublicKey: "npub1dan", peerNickname: "Dan")
+        service.addFavorite(peerNoisePublicKey: peerKey, peerNickname: "Dan")
         service.updatePeerFavoritedUs(peerNoisePublicKey: peerKey, favorited: true, peerNickname: "Dan")
 
         let relationship = service.getFavoriteStatus(forPeerID: PeerID(publicKey: peerKey))
@@ -81,7 +81,6 @@ final class FavoritesPersistenceServiceTests: XCTestCase {
         let peerKey = Data((128..<160).map(UInt8.init))
         let older = FavoritesPersistenceService.FavoriteRelationship(
             peerNoisePublicKey: peerKey,
-            peerNostrPublicKey: nil,
             peerNickname: "Older",
             isFavorite: true,
             theyFavoritedUs: false,
@@ -90,7 +89,6 @@ final class FavoritesPersistenceServiceTests: XCTestCase {
         )
         let newer = FavoritesPersistenceService.FavoriteRelationship(
             peerNoisePublicKey: peerKey,
-            peerNostrPublicKey: "npub1newer",
             peerNickname: "Newer",
             isFavorite: true,
             theyFavoritedUs: true,
@@ -104,7 +102,6 @@ final class FavoritesPersistenceServiceTests: XCTestCase {
 
         XCTAssertEqual(service.favorites.count, 1)
         XCTAssertEqual(service.getFavoriteStatus(for: peerKey)?.peerNickname, "Newer")
-        XCTAssertEqual(service.getFavoriteStatus(for: peerKey)?.peerNostrPublicKey, "npub1newer")
 
         let cleaned = try XCTUnwrap(keychain.load(key: storageKey, service: serviceKey))
         let decoded = try JSONDecoder().decode([FavoritesPersistenceService.FavoriteRelationship].self, from: cleaned)

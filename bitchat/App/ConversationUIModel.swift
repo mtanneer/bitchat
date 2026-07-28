@@ -19,7 +19,6 @@ final class ConversationUIModel: ObservableObject {
     private let chatViewModel: ChatViewModel
     private let privateConversationModel: PrivateConversationModel
     private let conversations: ConversationStore
-    private var activeChannel: ChannelID
     private var cancellables = Set<AnyCancellable>()
 
     init(
@@ -30,7 +29,6 @@ final class ConversationUIModel: ObservableObject {
         self.chatViewModel = chatViewModel
         self.privateConversationModel = privateConversationModel
         self.conversations = conversations
-        self.activeChannel = conversations.activeChannel
         self.currentNickname = chatViewModel.nickname
         self.isBatchingPublic = chatViewModel.isBatchingPublic
         self.showAutocomplete = chatViewModel.showAutocomplete
@@ -75,10 +73,7 @@ final class ConversationUIModel: ObservableObject {
     func block(peerID: PeerID?, displayName: String?) {
         guard let displayName else { return }
 
-        if let peerID, peerID.isGeoChat,
-           let full = chatViewModel.fullNostrHex(forSenderPeerID: peerID) {
-            chatViewModel.blockGeohashUser(pubkeyHexLowercased: full, displayName: displayName)
-        } else if let peerID, !peerID.isGeoDM, !peerID.isGeoChat {
+        if let peerID {
             // Mesh: block the peer's stable Noise identity resolved from the
             // tapped peerID rather than re-resolving a display-name string.
             chatViewModel.blockMeshPeer(peerID: peerID, displayName: displayName)
@@ -128,9 +123,6 @@ final class ConversationUIModel: ObservableObject {
     }
 
     func senderDisplayName(for peerID: PeerID, fallbackMessages: [BitchatMessage]) -> String? {
-        if peerID.isGeoDM || peerID.isGeoChat {
-            return chatViewModel.geohashDisplayName(for: peerID)
-        }
         if let nickname = chatViewModel.meshService.peerNickname(peerID: peerID) {
             return nickname
         }
@@ -193,14 +185,6 @@ final class ConversationUIModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .assign(to: &$activeLiveVoiceTalker)
 
-        conversations.$activeChannel
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] channel in
-                self?.activeChannel = channel
-                self?.refreshComputedState()
-            }
-            .store(in: &cancellables)
-
         privateConversationModel.$selectedPeerID
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -213,15 +197,10 @@ final class ConversationUIModel: ObservableObject {
         if let selectedPeerID = privateConversationModel.selectedPeerID {
             // Media transfer is not wired for groups in v1; keep it off so the
             // composer can't strand a media placeholder that never sends.
-            canSendMediaInCurrentContext = !(selectedPeerID.isGeoDM || selectedPeerID.isGeoChat || selectedPeerID.isGroup)
+            canSendMediaInCurrentContext = !selectedPeerID.isGroup
             return
         }
 
-        switch activeChannel {
-        case .mesh:
-            canSendMediaInCurrentContext = true
-        case .location:
-            canSendMediaInCurrentContext = false
-        }
+        canSendMediaInCurrentContext = true
     }
 }

@@ -9,7 +9,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Test Helpers
 
@@ -17,14 +17,11 @@ import BitFoundation
 @MainActor
 private func makeTestableViewModel() -> (viewModel: ChatViewModel, transport: MockTransport) {
     let keychain = MockKeychain()
-    let keychainHelper = MockKeychainHelper()
-    let idBridge = NostrIdentityBridge(keychain: keychainHelper)
     let identityManager = MockIdentityManager(keychain)
     let transport = MockTransport()
 
     let viewModel = ChatViewModel(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
         transport: transport
     )
@@ -174,13 +171,10 @@ struct ChatViewModelIdentityTests {
     @Test @MainActor
     func resolveNickname_prefersLocalPetnameOverClaimedNickname() async {
         let keychain = MockKeychain()
-        let keychainHelper = MockKeychainHelper()
-        let idBridge = NostrIdentityBridge(keychain: keychainHelper)
         let identityManager = MockIdentityManager(keychain)
         let transport = MockTransport()
         let viewModel = ChatViewModel(
             keychain: keychain,
-            idBridge: idBridge,
             identityManager: identityManager,
             transport: transport
         )
@@ -497,7 +491,7 @@ struct ChatViewModelReceivingTests {
         )
 
         let found = await TestHelpers.waitUntil({
-            viewModel.publicMessages(for: .mesh).contains { $0.content == "Public hello from Bob" }
+            viewModel.messages.contains { $0.content == "Public hello from Bob" }
         }, timeout: TestConstants.defaultTimeout)
 
         #expect(found)
@@ -780,50 +774,15 @@ struct ChatViewModelRateLimitingTests {
 struct ChatViewModelPublicConversationTests {
 
     @Test @MainActor
-    func bridgeAliasReplacementDoesNotContentDedupAwayAuthenticatedRadioRow() {
-        let (viewModel, _) = makeTestableViewModel()
-        let content = "same bridge and radio payload"
-        let timestamp = Date()
-        let bridgeMessage = BitchatMessage(
-            id: "bridge-event-id",
-            sender: "remote#beef",
-            content: content,
-            timestamp: timestamp,
-            isRelay: false,
-            senderPeerID: PeerID(bridge: String(repeating: "a", count: 64)),
-            isBridged: true
-        )
-        viewModel.handlePublicMessage(bridgeMessage)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-        #expect(viewModel.publicConversationContainsMessage(withID: bridgeMessage.id, in: .mesh))
-
-        viewModel.removeBridgeInjectedPublicMessage(withID: bridgeMessage.id)
-        let radioMessage = BitchatMessage(
-            id: "radio-stable-id",
-            sender: "remote",
-            content: content,
-            timestamp: timestamp,
-            isRelay: false,
-            senderPeerID: PeerID(str: "1122334455667788")
-        )
-        viewModel.handlePublicMessage(radioMessage)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-
-        #expect(!viewModel.publicConversationContainsMessage(withID: bridgeMessage.id, in: .mesh))
-        #expect(viewModel.publicConversationContainsMessage(withID: radioMessage.id, in: .mesh))
-    }
-
-    @Test @MainActor
     func addPublicSystemMessage_persistsAcrossTimelineRefresh() async {
         let (viewModel, _) = makeTestableViewModel()
 
         viewModel.addPublicSystemMessage("system refresh test")
-        viewModel.refreshVisibleMessages(from: .mesh)
+        viewModel.refreshVisibleMessages()
 
         // The system message lives in the mesh conversation itself, so the
         // derived `messages` view still surfaces it after a refresh.
         #expect(viewModel.messages.last?.content == "system refresh test")
-        #expect(viewModel.publicMessages(for: .mesh).last?.content == "system refresh test")
     }
 
     @Test @MainActor
@@ -834,21 +793,9 @@ struct ChatViewModelPublicConversationTests {
         #expect(!viewModel.messages.isEmpty)
 
         viewModel.clearCurrentPublicTimeline()
-        viewModel.refreshVisibleMessages(from: .mesh)
+        viewModel.refreshVisibleMessages()
 
         #expect(viewModel.messages.isEmpty)
-        #expect(viewModel.publicMessages(for: .mesh).isEmpty)
-    }
-
-    @Test @MainActor
-    func queuedGeohashSystemMessages_drainOnce() async {
-        let (viewModel, _) = makeTestableViewModel()
-
-        viewModel.queueGeohashSystemMessage("first")
-        viewModel.queueGeohashSystemMessage("second")
-
-        #expect(viewModel.drainPendingGeohashSystemMessages() == ["first", "second"])
-        #expect(viewModel.drainPendingGeohashSystemMessages().isEmpty)
     }
 }
 
@@ -1155,37 +1102,6 @@ struct ChatViewModelPanicTests {
         #expect(viewModel.selectedPrivateChatPeer == nil)
     }
 
-    @Test @MainActor
-    func panicClearAllData_resetsLiveGeohashAndNostrState() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruy"
-        let channel = GeohashChannel(level: .city, geohash: geohash)
-        let identity = try NostrIdentity.generate()
-        let pubkey = String(repeating: "ab", count: 32)
-        let peerID = PeerID(nostr: pubkey)
-
-        viewModel.activeChannel = .location(channel)
-        viewModel.setGeoChatSubscriptionID("geo-\(geohash)")
-        viewModel.setGeoDmSubscriptionID("geo-dm-\(geohash)")
-        viewModel.addGeoSamplingSub("geo-sample-\(geohash)", forGeohash: geohash)
-        viewModel.cachedGeohashIdentity = (geohash, identity)
-        viewModel.registerNostrKeyMapping(pubkey, for: peerID)
-        viewModel.currentGeohash = geohash
-        viewModel.geoNicknames = [pubkey: "alice"]
-        viewModel.teleportedGeo = [pubkey]
-
-        viewModel.panicClearAllData()
-
-        #expect(viewModel.activeChannel == .mesh)
-        #expect(viewModel.geoSubscriptionID == nil)
-        #expect(viewModel.geoDmSubscriptionID == nil)
-        #expect(viewModel.geoSamplingSubs.isEmpty)
-        #expect(viewModel.cachedGeohashIdentity == nil)
-        #expect(viewModel.nostrKeyMapping.isEmpty)
-        #expect(viewModel.currentGeohash == nil)
-        #expect(viewModel.geoNicknames.isEmpty)
-        #expect(viewModel.teleportedGeo.isEmpty)
-    }
 }
 
 // MARK: - Service Lifecycle Tests

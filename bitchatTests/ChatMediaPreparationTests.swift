@@ -6,7 +6,7 @@ import UIKit
 #else
 import AppKit
 #endif
-@testable import bitchat
+@testable import PlaneChat
 
 struct ChatMediaPreparationTests {
     @Test

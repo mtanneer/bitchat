@@ -1,17 +1,16 @@
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct ChatFavoriteTogglePolicyTests {
     @Test
-    func addingWithoutExistingStatusUsesFallbackNicknameAndBridgeKey() {
+    func addingWithoutExistingStatusUsesFallbackNickname() {
         let plan = ChatFavoriteTogglePolicy.plan(
             currentStatus: nil,
-            fallbackNickname: "alice",
-            bridgedNostrKey: "npub-alice"
+            fallbackNickname: "alice"
         )
 
         #expect(plan == ChatFavoriteTogglePlan(
-            persistenceAction: .add(nickname: "alice", nostrKey: "npub-alice"),
+            persistenceAction: .add(nickname: "alice"),
             notification: .none
         ))
     }
@@ -21,16 +20,14 @@ struct ChatFavoriteTogglePolicyTests {
         let plan = ChatFavoriteTogglePolicy.plan(
             currentStatus: ChatFavoriteStatusSnapshot(
                 peerNickname: "alice",
-                peerNostrPublicKey: "npub-current",
                 isFavorite: false,
                 theyFavoritedUs: true
             ),
-            fallbackNickname: "fallback",
-            bridgedNostrKey: "npub-bridge"
+            fallbackNickname: "fallback"
         )
 
         #expect(plan == ChatFavoriteTogglePlan(
-            persistenceAction: .add(nickname: "alice", nostrKey: "npub-current"),
+            persistenceAction: .add(nickname: "alice"),
             notification: .send(isFavorite: true)
         ))
     }
@@ -39,12 +36,11 @@ struct ChatFavoriteTogglePolicyTests {
     func addingWithoutAnyNicknameUsesUnknown() {
         let plan = ChatFavoriteTogglePolicy.plan(
             currentStatus: nil,
-            fallbackNickname: nil,
-            bridgedNostrKey: nil
+            fallbackNickname: nil
         )
 
         #expect(plan == ChatFavoriteTogglePlan(
-            persistenceAction: .add(nickname: "Unknown", nostrKey: nil),
+            persistenceAction: .add(nickname: "Unknown"),
             notification: .none
         ))
     }
@@ -54,12 +50,10 @@ struct ChatFavoriteTogglePolicyTests {
         let plan = ChatFavoriteTogglePolicy.plan(
             currentStatus: ChatFavoriteStatusSnapshot(
                 peerNickname: "alice",
-                peerNostrPublicKey: "npub-current",
                 isFavorite: true,
                 theyFavoritedUs: false
             ),
-            fallbackNickname: nil,
-            bridgedNostrKey: nil
+            fallbackNickname: nil
         )
 
         #expect(plan == ChatFavoriteTogglePlan(

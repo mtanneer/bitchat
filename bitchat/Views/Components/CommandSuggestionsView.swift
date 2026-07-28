@@ -9,7 +9,6 @@ import SwiftUI
 
 struct CommandSuggestionsView: View {
     @EnvironmentObject private var privateConversationModel: PrivateConversationModel
-    @EnvironmentObject private var locationChannelsModel: LocationChannelsModel
     @ThemedPalette private var palette
 
     @Binding var messageText: String
@@ -24,9 +23,9 @@ struct CommandSuggestionsView: View {
 
     private var filteredCommands: [CommandInfo] {
         guard messageText.hasPrefix("/") else { return [] }
-        let isGeoPublic = locationChannelsModel.selectedChannel.isLocation
+        // ponytail: no more location channels, so the public scope is always mesh.
         let isGeoDM = privateConversationModel.selectedPeerID?.isGeoDM == true
-        let commands = CommandInfo.all(isGeoPublic: isGeoPublic, isGeoDM: isGeoDM)
+        let commands = CommandInfo.all(isGeoPublic: false, isGeoDM: isGeoDM)
         // While arguments are being typed, keep the matched command's usage
         // row visible instead of vanishing at the first space.
         if let typed = typedCommandAlias {
@@ -91,16 +90,13 @@ struct CommandSuggestionsView: View {
     let keychain = KeychainManager()
     let viewModel = ChatViewModel(
         keychain: keychain,
-        idBridge: NostrIdentityBridge(),
         identityManager: SecureIdentityStateManager(keychain)
     )
     let privateConversationModel = PrivateConversationModel(
         chatViewModel: viewModel,
         conversations: viewModel.conversations
     )
-    let locationChannelsModel = LocationChannelsModel()
-    
+
     CommandSuggestionsView(messageText: $messageText)
         .environmentObject(privateConversationModel)
-        .environmentObject(locationChannelsModel)
 }

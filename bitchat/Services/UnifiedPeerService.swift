@@ -28,21 +28,18 @@ final class UnifiedPeerService: ObservableObject, TransportPeerEventsDelegate {
     private var peerIndex: [PeerID: BitchatPeer] = [:]
     private var fingerprintCache: [PeerID: String] = [:]
     private let meshService: Transport
-    private let idBridge: NostrIdentityBridge
     private let identityManager: SecureIdentityStateManagerProtocol
     weak var messageRouter: MessageRouter?
     private let favoritesService = FavoritesPersistenceService.shared
     private var cancellables = Set<AnyCancellable>()
-    
+
     // MARK: - Initialization
-    
+
     init(
         meshService: Transport,
-        idBridge: NostrIdentityBridge,
         identityManager: SecureIdentityStateManagerProtocol
     ) {
         self.meshService = meshService
-        self.idBridge = idBridge
         self.identityManager = identityManager
         
         // Subscribe to changes from both services
@@ -202,7 +199,6 @@ final class UnifiedPeerService: ObservableObject, TransportPeerEventsDelegate {
         if let noiseKey = peerInfo.noisePublicKey,
            let favoriteStatus = favorites[noiseKey] {
             peer.favoriteStatus = favoriteStatus
-            peer.nostrPublicKey = favoriteStatus.peerNostrPublicKey
         }
         
         return peer
@@ -222,8 +218,7 @@ final class UnifiedPeerService: ObservableObject, TransportPeerEventsDelegate {
         )
         
         peer.favoriteStatus = favorite
-        peer.nostrPublicKey = favorite.peerNostrPublicKey
-        
+
         return peer
     }
     
@@ -315,25 +310,17 @@ final class UnifiedPeerService: ObservableObject, TransportPeerEventsDelegate {
             // Remove favorite
             favoritesService.removeFavorite(peerNoisePublicKey: peer.noisePublicKey)
         } else {
-            // Get or derive peer's Nostr public key if not already known
-            var peerNostrKey = peer.nostrPublicKey
-            if peerNostrKey == nil {
-                // Try to get from NostrIdentityBridge association
-                peerNostrKey = idBridge.getNostrPublicKey(for: peer.noisePublicKey)
-            }
-            
             // Add favorite
             favoritesService.addFavorite(
                 peerNoisePublicKey: peer.noisePublicKey,
-                peerNostrPublicKey: peerNostrKey,
                 peerNickname: finalNickname
             )
         }
-        
+
         // Log the final nickname being saved
         SecureLogger.debug("⭐️ Toggled favorite for '\(finalNickname)' (peerID: \(peerID), was: \(wasFavorite), now: \(!wasFavorite))", category: .session)
-        
-        // Send favorite notification to the peer via router (mesh or Nostr)
+
+        // Send favorite notification to the peer via router (mesh)
         if let router = messageRouter {
             router.sendFavoriteNotification(to: peerID, isFavorite: !wasFavorite)
         } else {

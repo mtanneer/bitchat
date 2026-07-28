@@ -9,7 +9,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 /// Board posts ride gossip sync through a provider that queries the board
 /// store, so retention (expiry, tombstones, caps) has a single owner.

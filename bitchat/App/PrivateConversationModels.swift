@@ -95,7 +95,6 @@ final class PrivateInboxModel: ObservableObject {
 enum PrivateConversationAvailability: Equatable {
     case bluetoothConnected
     case meshReachable
-    case nostrAvailable
     case offline
 }
 
@@ -108,7 +107,7 @@ struct PrivateConversationHeaderState: Equatable {
     let encryptionStatus: EncryptionStatus?
 
     var supportsFavoriteToggle: Bool {
-        !conversationPeerID.isGeoDM && !conversationPeerID.isGroup
+        !conversationPeerID.isGroup
     }
 
     /// Group chats have no single peer identity behind the header: no
@@ -125,19 +124,16 @@ final class PrivateConversationModel: ObservableObject {
 
     private let chatViewModel: ChatViewModel
     private let conversations: ConversationStore
-    private let locationChannelsModel: LocationChannelsModel
     private let peerIdentityStore: PeerIdentityStore
     private var cancellables = Set<AnyCancellable>()
 
     init(
         chatViewModel: ChatViewModel,
         conversations: ConversationStore,
-        locationChannelsModel: LocationChannelsModel? = nil,
         peerIdentityStore: PeerIdentityStore? = nil
     ) {
         self.chatViewModel = chatViewModel
         self.conversations = conversations
-        self.locationChannelsModel = locationChannelsModel ?? LocationChannelsModel()
         self.peerIdentityStore = peerIdentityStore ?? chatViewModel.peerIdentityStore
         let initialPeerID = conversations.selectedPrivatePeerID
         self.selectedPeerID = initialPeerID
@@ -154,13 +150,7 @@ final class PrivateConversationModel: ObservableObject {
     }
 
     func openConversation(for peerID: PeerID) {
-        if peerID.isGeoChat {
-            guard let full = chatViewModel.fullNostrHex(forSenderPeerID: peerID) else { return }
-            chatViewModel.startGeohashDM(withPubkeyHex: full)
-        } else {
-            chatViewModel.startPrivateChat(with: peerID)
-        }
-
+        chatViewModel.startPrivateChat(with: peerID)
         refreshSelectedConversation()
     }
 
@@ -225,13 +215,6 @@ final class PrivateConversationModel: ObservableObject {
                 self?.refreshSelectedConversation()
             }
             .store(in: &cancellables)
-
-        locationChannelsModel.$selectedChannel
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.refreshSelectedConversation()
-            }
-            .store(in: &cancellables)
     }
 
     private func refreshSelectedConversation() {
@@ -265,16 +248,8 @@ final class PrivateConversationModel: ObservableObject {
         let headerPeerID = chatViewModel.getShortIDForNoiseKey(conversationPeerID)
         let peer = chatViewModel.getPeer(byID: headerPeerID)
         let displayName = resolveDisplayName(for: conversationPeerID, headerPeerID: headerPeerID, peer: peer)
-        // Geo DMs are always routed over Nostr (NIP-17); their nostr_ keys
-        // never resolve to a reachable mesh peer, so resolveAvailability would
-        // report .offline. Report .nostrAvailable so the header shows the
-        // globe instead of a misleading "offline" tag.
-        let availability = conversationPeerID.isGeoDM
-            ? .nostrAvailable
-            : resolveAvailability(for: headerPeerID, peer: peer)
-        let encryptionStatus: EncryptionStatus? = conversationPeerID.isGeoDM
-            ? nil
-            : chatViewModel.getEncryptionStatus(for: headerPeerID)
+        let availability = resolveAvailability(for: headerPeerID, peer: peer)
+        let encryptionStatus = chatViewModel.getEncryptionStatus(for: headerPeerID)
 
         return PrivateConversationHeaderState(
             conversationPeerID: conversationPeerID,
@@ -291,9 +266,6 @@ final class PrivateConversationModel: ObservableObject {
         headerPeerID: PeerID,
         peer: BitchatPeer?
     ) -> String {
-        if conversationPeerID.isGeoDM, case .location(let channel) = locationChannelsModel.selectedChannel {
-            return "#\(channel.geohash)/@\(chatViewModel.geohashDisplayName(for: conversationPeerID))"
-        }
         if let displayName = peer?.displayName {
             return displayName
         }
@@ -338,8 +310,6 @@ final class PrivateConversationModel: ObservableObject {
                 return .bluetoothConnected
             case .meshReachable:
                 return .meshReachable
-            case .nostrAvailable:
-                return .nostrAvailable
             case .offline:
                 return .offline
             }
@@ -347,11 +317,6 @@ final class PrivateConversationModel: ObservableObject {
 
         if chatViewModel.meshService.isPeerReachable(headerPeerID) {
             return .meshReachable
-        }
-        if let noiseKey = Data(hexString: headerPeerID.id),
-           let favoriteStatus = FavoritesPersistenceService.shared.getFavoriteStatus(for: noiseKey),
-           favoriteStatus.isMutual {
-            return .nostrAvailable
         }
         if chatViewModel.meshService.isPeerConnected(headerPeerID) || chatViewModel.connectedPeers.contains(headerPeerID) {
             return .bluetoothConnected

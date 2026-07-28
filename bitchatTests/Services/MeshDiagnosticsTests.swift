@@ -10,7 +10,7 @@
 import Foundation
 import Testing
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite(.serialized)
 struct MeshDiagnosticsTests {
@@ -256,10 +256,8 @@ struct MeshDiagnosticsTests {
 @MainActor
 private final class DiagnosticsMockContext: CommandContextProvider {
     var nickname: String = "tester"
-    var activeChannel: ChannelID = .mesh
     var selectedPrivateChatPeer: PeerID?
     var blockedUsers: Set<String> = []
-    let idBridge = NostrIdentityBridge(keychain: MockKeychain())
 
     var nicknameToPeerID: [String: PeerID] = [:]
     private(set) var commandOutputs: [String] = []

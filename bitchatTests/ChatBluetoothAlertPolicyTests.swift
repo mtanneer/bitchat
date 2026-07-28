@@ -1,6 +1,6 @@
 import CoreBluetooth
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct ChatBluetoothAlertPolicyTests {
     @Test

@@ -9,7 +9,7 @@
 import Testing
 import CoreBluetooth
 @testable import BitFoundation // to avoid unnecessary public's
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLEServiceTests {
     private let service: MockBLEService

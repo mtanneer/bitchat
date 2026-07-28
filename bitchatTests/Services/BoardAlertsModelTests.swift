@@ -9,7 +9,7 @@
 import Combine
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 struct BoardAlertsModelTests {

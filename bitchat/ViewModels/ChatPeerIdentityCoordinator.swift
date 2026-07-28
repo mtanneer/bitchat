@@ -30,7 +30,6 @@ protocol ChatPeerIdentityContext: AnyObject {
     var selectedPrivateChatPeer: PeerID? { get set }
     var selectedPrivateChatFingerprint: String? { get set }
     var myPeerID: PeerID { get }
-    var activeChannel: ChannelID { get }
     /// Signals that message state changed so observers refresh (e.g. `objectWillChange.send()`).
     func notifyUIChanged()
     func addSystemMessage(_ content: String)
@@ -88,27 +87,18 @@ protocol ChatPeerIdentityContext: AnyObject {
     /// The persisted favorite relationship for a short (ephemeral) peer ID, if any.
     func favoriteRelationship(forPeerID peerID: PeerID) -> FavoritesPersistenceService.FavoriteRelationship?
     /// Adds (or updates) a favorite in the favorites store.
-    func addFavorite(noiseKey: Data, nostrPublicKey: String?, nickname: String)
+    func addFavorite(noiseKey: Data, nickname: String)
     /// Removes a favorite from the favorites store.
     func removeFavorite(noiseKey: Data)
-
-    // MARK: Geohash & Nostr
-    var geoNicknames: [String: String] { get }
-    func visibleGeohashPeople() -> [GeoPerson]
-    /// Records the Nostr pubkey behind a (possibly virtual) peer ID.
-    func registerNostrKeyMapping(_ pubkey: String, for peerID: PeerID)
-    func bridgedNostrPublicKey(for noiseKey: Data) -> String?
-    func sendFavoriteNotificationViaNostr(noisePublicKey: Data, isFavorite: Bool)
 }
 
 extension ChatViewModel: ChatPeerIdentityContext {
     // `privateChats`, `unreadPrivateMessages`, `selectedPrivateChatPeer`,
     // `selectedPrivateChatFingerprint`, `myPeerID`,
-    // `activeChannel`, `connectedPeers`, `geoNicknames`, `notifyUIChanged()`,
+    // `connectedPeers`, `notifyUIChanged()`,
     // `addSystemMessage(_:)`, `peerNickname(for:)`, `meshPeerNicknames()`,
     // `ephemeralPeerID(forNoiseKey:)`, `unifiedPeer(for:)`,
-    // `registerNostrKeyMapping(_:for:)`, `visibleGeohashPeople()`,
-    // `markPrivateMessagesAsRead(from:)`, `sendFavoriteNotificationViaNostr`,
+    // `markPrivateMessagesAsRead(from:)`,
     // and the conversation-store sync methods are shared requirements with
     // the other contexts or satisfied by existing `ChatViewModel` members.
     // The single-writer intent op `syncReadReceiptsForSentMessages(for:)`
@@ -200,10 +190,6 @@ extension ChatViewModel: ChatPeerIdentityContext {
         identityManager.getSocialIdentity(for: fingerprint)
     }
 
-    func bridgedNostrPublicKey(for noiseKey: Data) -> String? {
-        idBridge.getNostrPublicKey(for: noiseKey)
-    }
-
     // `favoriteRelationship(forNoiseKey:)` is shared with
     // `ChatPrivateConversationContext`; its witness lives in
     // `ChatPrivateConversationCoordinator.swift`.
@@ -212,10 +198,9 @@ extension ChatViewModel: ChatPeerIdentityContext {
         FavoritesPersistenceService.shared.getFavoriteStatus(forPeerID: peerID)
     }
 
-    func addFavorite(noiseKey: Data, nostrPublicKey: String?, nickname: String) {
+    func addFavorite(noiseKey: Data, nickname: String) {
         FavoritesPersistenceService.shared.addFavorite(
             peerNoisePublicKey: noiseKey,
-            peerNostrPublicKey: nostrPublicKey,
             peerNickname: nickname
         )
     }
@@ -257,20 +242,12 @@ final class ChatPeerIdentityCoordinator {
 
     @MainActor
     func hasUnreadMessages(for peerID: PeerID) -> Bool {
-        var noiseKeyPeerID: PeerID?
-        var nostrPeerID: PeerID?
-
-        if let peer = context.unifiedPeer(for: peerID) {
-            noiseKeyPeerID = PeerID(hexData: peer.noisePublicKey)
-            if let nostrHex = peer.nostrPublicKey {
-                nostrPeerID = PeerID(nostr_: nostrHex)
-            }
-        }
+        let noiseKeyPeerID = context.unifiedPeer(for: peerID).map { PeerID(hexData: $0.noisePublicKey) }
 
         let unreadContext = ChatUnreadPeerContext(
             peerID: peerID,
             noiseKeyPeerID: noiseKeyPeerID,
-            nostrPeerID: nostrPeerID,
+            nostrPeerID: nil,
             nickname: context.peerNickname(for: peerID)
         )
 
@@ -501,32 +478,7 @@ final class ChatPeerIdentityCoordinator {
 
     @MainActor
     func getPeerIDForNickname(_ nickname: String) -> PeerID? {
-        switch context.activeChannel {
-        case .location:
-            if nickname.contains("#"),
-               let person = context.visibleGeohashPeople()
-                .first(where: { $0.displayName == nickname }) {
-                let conversationKey = PeerID(nostr_: person.id)
-                context.registerNostrKeyMapping(person.id, for: conversationKey)
-                return conversationKey
-            }
-
-            let base = nickname
-                .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-                .first
-                .map(String.init)?
-                .lowercased() ?? nickname.lowercased()
-            if let pubkey = context.geoNicknames.first(where: { $0.value.lowercased() == base })?.key {
-                let conversationKey = PeerID(nostr_: pubkey)
-                context.registerNostrKeyMapping(pubkey, for: conversationKey)
-                return conversationKey
-            }
-
-        case .mesh:
-            break
-        }
-
-        return context.unifiedPeerID(forNickname: nickname)
+        context.unifiedPeerID(forNickname: nickname)
     }
 
     @MainActor
@@ -625,15 +577,13 @@ private extension ChatPeerIdentityCoordinator {
         let fallbackNickname = context.privateMessages(for: peerID).first { $0.senderPeerID == peerID }?.sender
         let plan = ChatFavoriteTogglePolicy.plan(
             currentStatus: currentStatus.map(ChatFavoriteStatusSnapshot.init),
-            fallbackNickname: fallbackNickname,
-            bridgedNostrKey: context.bridgedNostrPublicKey(for: noisePublicKey)
+            fallbackNickname: fallbackNickname
         )
 
         switch plan.persistenceAction {
-        case .add(let nickname, let nostrKey):
+        case .add(let nickname):
             context.addFavorite(
                 noiseKey: noisePublicKey,
-                nostrPublicKey: nostrKey,
                 nickname: nickname
             )
 
@@ -642,13 +592,6 @@ private extension ChatPeerIdentityCoordinator {
         }
 
         context.notifyUIChanged()
-
-        if case .send(let isFavorite) = plan.notification {
-            context.sendFavoriteNotificationViaNostr(
-                noisePublicKey: noisePublicKey,
-                isFavorite: isFavorite
-            )
-        }
     }
 }
 

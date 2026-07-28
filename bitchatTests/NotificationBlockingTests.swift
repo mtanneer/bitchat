@@ -9,7 +9,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct NotificationBlockingTests {
 

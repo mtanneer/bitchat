@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// One-way Noise X envelopes: encryption to a known static key without an
 /// interactive handshake, used by the courier store-and-forward path.

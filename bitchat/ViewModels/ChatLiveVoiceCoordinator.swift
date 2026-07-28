@@ -40,15 +40,15 @@ protocol ChatLiveVoiceContext: AnyObject {
 
 extension ChatViewModel: ChatLiveVoiceContext {
     var isViewingPublicMeshTimeline: Bool {
-        selectedPrivateChatPeer == nil && activeChannel == .mesh
+        selectedPrivateChatPeer == nil
     }
 
     func appendPublicMeshMessage(_ message: BitchatMessage) {
-        _ = appendPublicMessage(message, to: ConversationID(channelID: .mesh))
+        _ = appendPublicMessage(message, to: .mesh)
     }
 
     func upsertPublicMeshMessage(_ message: BitchatMessage) {
-        conversations.upsertByID(message, in: ConversationID(channelID: .mesh))
+        conversations.upsertByID(message, in: .mesh)
     }
 
     func setActivePublicVoiceTalker(_ nickname: String?) {

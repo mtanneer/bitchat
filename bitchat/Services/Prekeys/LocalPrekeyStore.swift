@@ -58,7 +58,7 @@ final class LocalPrekeyStore {
 
     private let keychain: KeychainManagerProtocol
     private let now: () -> Date
-    private let queue = DispatchQueue(label: "chat.bitchat.prekeys.local")
+    private let queue = DispatchQueue(label: "chat.planechat.prekeys.local")
 
     // Guarded by `queue`.
     private var records: [Record] = []

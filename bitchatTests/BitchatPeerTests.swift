@@ -1,27 +1,23 @@
 import Foundation
 import Testing
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("BitchatPeer Tests")
 struct BitchatPeerTests {
     typealias FavoriteRelationship = FavoritesPersistenceService.FavoriteRelationship
 
-    @Test("Connection state prioritizes bluetooth, mesh, nostr, then offline")
+    @Test("Connection state prioritizes bluetooth, mesh, then offline")
     func connectionStatePriorityIsCorrect() {
         let peerID = PeerID(str: "0123456789abcdef")
         let noiseKey = Data((0..<32).map(UInt8.init))
-        let mutual = makeRelationship(isFavorite: true, theyFavoritedUs: true)
 
         let bluetooth = BitchatPeer(peerID: peerID, noisePublicKey: noiseKey, nickname: "A", isConnected: true, isReachable: true)
         let mesh = BitchatPeer(peerID: peerID, noisePublicKey: noiseKey, nickname: "A", isConnected: false, isReachable: true)
-        var nostr = BitchatPeer(peerID: peerID, noisePublicKey: noiseKey, nickname: "A", isConnected: false, isReachable: false)
-        nostr.favoriteStatus = mutual
         let offline = BitchatPeer(peerID: peerID, noisePublicKey: noiseKey, nickname: "A", isConnected: false, isReachable: false)
 
         #expect(bluetooth.connectionState == .bluetoothConnected)
         #expect(mesh.connectionState == .meshReachable)
-        #expect(nostr.connectionState == .nostrAvailable)
         #expect(offline.connectionState == .offline)
     }
 
@@ -36,14 +32,14 @@ struct BitchatPeerTests {
         #expect(peer.statusIcon == "🌙")
     }
 
-    @Test("Mutual offline peers show Nostr icon")
-    func mutualFavoriteOfflinePeerShowsNostrIcon() {
+    @Test("Mutual offline peers report favorite state without an icon")
+    func mutualFavoriteOfflinePeerReportsState() {
         let peerID = PeerID(str: "0011223344556677")
         let noiseKey = Data((64..<96).map(UInt8.init))
         var peer = BitchatPeer(peerID: peerID, noisePublicKey: noiseKey, nickname: "Peer", isConnected: false, isReachable: false)
         peer.favoriteStatus = makeRelationship(isFavorite: true, theyFavoritedUs: true)
 
-        #expect(peer.statusIcon == "🌐")
+        #expect(peer.statusIcon == "")
         #expect(peer.isFavorite)
         #expect(peer.isMutualFavorite)
         #expect(peer.theyFavoritedUs)
@@ -73,7 +69,6 @@ struct BitchatPeerTests {
     private func makeRelationship(isFavorite: Bool, theyFavoritedUs: Bool) -> FavoriteRelationship {
         FavoriteRelationship(
             peerNoisePublicKey: Data(repeating: 7, count: 32),
-            peerNostrPublicKey: "npub1example",
             peerNickname: "Peer",
             isFavorite: isFavorite,
             theyFavoritedUs: theyFavoritedUs,

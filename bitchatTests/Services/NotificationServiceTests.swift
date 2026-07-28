@@ -1,7 +1,7 @@
 import XCTest
 import UserNotifications
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 final class NotificationServiceTests: XCTestCase {
     func test_requestAuthorization_skipsWhenRunningTests() {

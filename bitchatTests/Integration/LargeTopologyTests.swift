@@ -9,7 +9,7 @@
 import Foundation
 import Testing
 @testable import BitFoundation // to avoid unnecessary public's
-@testable import bitchat
+@testable import PlaneChat
 
 /// Production-shaped topology tests: deep relay chains, larger partial meshes,
 /// partitions, and churn.

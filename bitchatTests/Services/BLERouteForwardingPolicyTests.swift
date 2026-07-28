@@ -1,7 +1,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("BLE route forwarding policy tests")
 struct BLERouteForwardingPolicyTests {

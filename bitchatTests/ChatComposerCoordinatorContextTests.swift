@@ -14,7 +14,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 
@@ -49,24 +49,10 @@ private final class MockChatComposerContext: ChatComposerContext {
     // Identity & channel state
     var nickname = "me"
     var myPeerID = PeerID(str: "0011223344556677")
-    var activeChannel: ChannelID = .mesh
     var meshNickname = "me"
     var meshNicknamesByPeerID: [PeerID: String] = [:]
 
     func meshPeerNicknames() -> [PeerID: String] { meshNicknamesByPeerID }
-
-    // Geohash identity
-    var geoNicknames: [String: String] = [:]
-    static let dummyIdentity = NostrIdentity(
-        privateKey: Data(repeating: 0x11, count: 32),
-        publicKey: Data(repeating: 0x22, count: 32),
-        npub: "npub1mock",
-        createdAt: Date(timeIntervalSince1970: 0)
-    )
-
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity {
-        Self.dummyIdentity
-    }
 }
 
 // MARK: - Coordinator Tests Against Mock Context
@@ -102,22 +88,6 @@ struct ChatComposerCoordinatorContextTests {
         #expect(context.autocompleteRange == nil)
         #expect(!context.showAutocomplete)
         #expect(context.selectedAutocompleteIndex == 0)
-    }
-
-    @Test @MainActor
-    func updateAutocomplete_onLocationChannel_buildsGeoTokensWithoutOwnToken() {
-        let context = MockChatComposerContext()
-        let coordinator = ChatComposerCoordinator(context: context)
-        context.activeChannel = .location(GeohashChannel(level: .city, geohash: "u4pruydq"))
-        context.geoNicknames = [
-            "aaaabbbbccccdddd": "carol",
-            // Own token (nickname#last-4-of-pubkey) must be removed; the dummy
-            // identity's public key hex ends in "2222".
-            "ffffeeeeddddcccc2222": "me"
-        ]
-
-        coordinator.updateAutocomplete(for: "@ca", cursorPosition: 3)
-        #expect(context.queriedPeerCandidates == [["carol#dddd"]])
     }
 
     @Test @MainActor

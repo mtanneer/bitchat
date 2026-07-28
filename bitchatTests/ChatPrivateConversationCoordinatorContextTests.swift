@@ -10,7 +10,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 
@@ -21,22 +21,18 @@ private final class MockChatPrivateConversationContext: ChatPrivateConversationC
     // Conversation state
     var privateChats: [PeerID: [BitchatMessage]] = [:]
     var sentReadReceipts: Set<String> = []
-    var sentGeoDeliveryAcks: Set<String> = []
     var unreadPrivateMessages: Set<PeerID> = []
     var selectedPrivateChatPeer: PeerID?
     var nickname = "me"
-    var activeChannel: ChannelID = .mesh
-    var nostrKeyMapping: [PeerID: String] = [:]
     private(set) var notifyUIChangedCount = 0
+
+    func privateMessages(for peerID: PeerID) -> [BitchatMessage] {
+        privateChats[peerID] ?? []
+    }
 
     @discardableResult
     func markReadReceiptSent(_ messageID: String) -> Bool {
         sentReadReceipts.insert(messageID).inserted
-    }
-
-    @discardableResult
-    func markGeoDeliveryAckSent(_ messageID: String) -> Bool {
-        sentGeoDeliveryAcks.insert(messageID).inserted
     }
 
     func handOffSelectedPrivateChat(from oldPeerIDs: [PeerID], to newPeerID: PeerID) {
@@ -154,28 +150,10 @@ private final class MockChatPrivateConversationContext: ChatPrivateConversationC
         clearedFingerprints.append(peerID)
     }
 
-    // Nostr identity
-    var blockedNostrPubkeys: Set<String> = []
-    var displayNamesByPubkey: [String: String] = [:]
-
-    func isNostrBlocked(pubkeyHexLowercased: String) -> Bool {
-        blockedNostrPubkeys.contains(pubkeyHexLowercased)
-    }
-
-    func displayNameForNostrPubkey(_ pubkeyHex: String) -> String {
-        displayNamesByPubkey[pubkeyHex] ?? "anon"
-    }
-
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity { Self.dummyIdentity }
-    func currentNostrIdentity() -> NostrIdentity? { Self.dummyIdentity }
-
     // Routing & acknowledgements
     private(set) var routedPrivateMessages: [(content: String, peerID: PeerID, messageID: String)] = []
     private(set) var routedReadReceipts: [(messageID: String, peerID: PeerID)] = []
     private(set) var meshReadReceipts: [(messageID: String, peerID: PeerID)] = []
-    private(set) var geoPrivateMessages: [(content: String, recipientHex: String, messageID: String)] = []
-    private(set) var geoDeliveryAcks: [(messageID: String, recipientHex: String)] = []
-    private(set) var geoReadReceipts: [(messageID: String, recipientHex: String)] = []
 
     func routePrivateMessage(_ content: String, to peerID: PeerID, recipientNickname: String, messageID: String) {
         routedPrivateMessages.append((content, peerID, messageID))
@@ -191,21 +169,9 @@ private final class MockChatPrivateConversationContext: ChatPrivateConversationC
         meshReadReceipts.append((receipt.originalMessageID, peerID))
     }
 
-    func sendGeohashPrivateMessage(_ content: String, toRecipientHex recipientHex: String, from identity: NostrIdentity, messageID: String) {
-        geoPrivateMessages.append((content, recipientHex, messageID))
-    }
-
-    func sendGeohashDeliveryAck(for messageID: String, toRecipientHex recipientHex: String, from identity: NostrIdentity) {
-        geoDeliveryAcks.append((messageID, recipientHex))
-    }
-
-    func sendGeohashReadReceipt(_ messageID: String, toRecipientHex recipientHex: String, from identity: NostrIdentity) {
-        geoReadReceipts.append((messageID, recipientHex))
-    }
-
     // Favorites & notifications
     var favoriteRelationshipsByNoiseKey: [Data: FavoritesPersistenceService.FavoriteRelationship] = [:]
-    private(set) var peerFavoritedUsUpdates: [(noiseKey: Data, favorited: Bool, nickname: String, nostrPublicKey: String?)] = []
+    private(set) var peerFavoritedUsUpdates: [(noiseKey: Data, favorited: Bool, nickname: String)] = []
     private(set) var privateMessageNotifications: [(senderName: String, message: String, peerID: PeerID)] = []
 
     func favoriteRelationship(forNoiseKey noiseKey: Data) -> FavoritesPersistenceService.FavoriteRelationship? {
@@ -216,8 +182,8 @@ private final class MockChatPrivateConversationContext: ChatPrivateConversationC
         favoriteRelationshipsByNoiseKey.first(where: { PeerID(publicKey: $0.key) == peerID })?.value
     }
 
-    func updatePeerFavoritedUs(noiseKey: Data, favorited: Bool, nickname: String, nostrPublicKey: String?) {
-        peerFavoritedUsUpdates.append((noiseKey, favorited, nickname, nostrPublicKey))
+    func updatePeerFavoritedUs(noiseKey: Data, favorited: Bool, nickname: String) {
+        peerFavoritedUsUpdates.append((noiseKey, favorited, nickname))
     }
 
     func notifyPrivateMessage(from senderName: String, message: String, peerID: PeerID) {
@@ -236,13 +202,6 @@ private final class MockChatPrivateConversationContext: ChatPrivateConversationC
     func addLocalPrivateSystemMessage(_ content: String, to peerID: PeerID) {
         privateSystemMessages.append((content, peerID))
     }
-
-    static let dummyIdentity = NostrIdentity(
-        privateKey: Data(repeating: 0x11, count: 32),
-        publicKey: Data(repeating: 0x22, count: 32),
-        npub: "npub1mock",
-        createdAt: Date(timeIntervalSince1970: 0)
-    )
 }
 
 // MARK: - Helpers
@@ -281,14 +240,12 @@ private func isRead(_ status: DeliveryStatus?, by expected: String) -> Bool {
 
 private func makeFavoriteRelationship(
     noiseKey: Data,
-    nostrPublicKey: String? = nil,
     nickname: String = "alice",
     isFavorite: Bool = false,
     theyFavoritedUs: Bool = false
 ) -> FavoritesPersistenceService.FavoriteRelationship {
     FavoritesPersistenceService.FavoriteRelationship(
         peerNoisePublicKey: noiseKey,
-        peerNostrPublicKey: nostrPublicKey,
         peerNickname: nickname,
         isFavorite: isFavorite,
         theyFavoritedUs: theyFavoritedUs,
@@ -336,83 +293,6 @@ struct ChatPrivateConversationCoordinatorContextTests {
     }
 
     @Test @MainActor
-    func geoDeliveredAndReadAcks_updateStatusAndNotify() async {
-        let context = MockChatPrivateConversationContext()
-        let coordinator = ChatPrivateConversationCoordinator(context: context)
-        let convKey = PeerID(str: "nostr_abcdef12")
-        let senderPubkey = "feedface00112233"
-        context.displayNamesByPubkey[senderPubkey] = "alice#1234"
-        context.privateChats[convKey] = [
-            makeIncomingMessage(id: "mine-1", sender: "me"),
-            makeIncomingMessage(id: "mine-2", sender: "me")
-        ]
-
-        coordinator.handleDelivered(
-            NoisePayload(type: .delivered, data: Data("mine-1".utf8)),
-            senderPubkey: senderPubkey,
-            convKey: convKey
-        )
-        #expect(isDelivered(context.privateChats[convKey]?.first?.deliveryStatus, to: "alice#1234"))
-        #expect(context.notifyUIChangedCount == 1)
-
-        coordinator.handleReadReceipt(
-            NoisePayload(type: .readReceipt, data: Data("mine-2".utf8)),
-            senderPubkey: senderPubkey,
-            convKey: convKey
-        )
-        #expect(isRead(context.privateChats[convKey]?.last?.deliveryStatus, by: "alice#1234"))
-        #expect(context.notifyUIChangedCount == 2)
-
-        // Unknown message id: no state change, no UI notification.
-        coordinator.handleDelivered(
-            NoisePayload(type: .delivered, data: Data("missing".utf8)),
-            senderPubkey: senderPubkey,
-            convKey: convKey
-        )
-        #expect(context.notifyUIChangedCount == 2)
-    }
-
-    @Test @MainActor
-    func geoPrivateMessage_sendsDeliveryAckOnceAndDeduplicates() async {
-        let context = MockChatPrivateConversationContext()
-        let coordinator = ChatPrivateConversationCoordinator(context: context)
-        let convKey = PeerID(str: "nostr_abcdef12")
-        let senderPubkey = "feedface00112233"
-        context.displayNamesByPubkey[senderPubkey] = "bob#5678"
-        let payloadData = PrivateMessagePacket(messageID: "geo-1", content: "hi there").encode()!
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-        // Old timestamp: not "recent", so no unread marking (and no notification).
-        let oldTimestamp = Date().addingTimeInterval(-120)
-
-        coordinator.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: MockChatPrivateConversationContext.dummyIdentity,
-            messageTimestamp: oldTimestamp
-        )
-
-        #expect(context.geoDeliveryAcks.map(\.messageID) == ["geo-1"])
-        #expect(context.geoDeliveryAcks.first?.recipientHex == senderPubkey)
-        #expect(context.sentGeoDeliveryAcks == ["geo-1"])
-        #expect(context.privateChats[convKey]?.map(\.id) == ["geo-1"])
-        #expect(context.privateChats[convKey]?.first?.sender == "bob#5678")
-        #expect(context.unreadPrivateMessages.isEmpty)
-        #expect(context.notifyUIChangedCount == 1)
-
-        // Redelivery: ack is deduplicated and the message is not appended twice.
-        coordinator.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: MockChatPrivateConversationContext.dummyIdentity,
-            messageTimestamp: oldTimestamp
-        )
-        #expect(context.geoDeliveryAcks.count == 1)
-        #expect(context.privateChats[convKey]?.count == 1)
-    }
-
-    @Test @MainActor
     func handleViewingThisChat_clearsUnreadAndSendsRoutedReadReceiptOnce() async {
         let context = MockChatPrivateConversationContext()
         let coordinator = ChatPrivateConversationCoordinator(context: context)
@@ -426,8 +306,7 @@ struct ChatPrivateConversationCoordinatorContextTests {
         coordinator.handleViewingThisChat(
             message,
             targetPeerID: stablePeerID,
-            key: noiseKey,
-            senderPubkey: "feedface00112233"
+            key: noiseKey
         )
 
         #expect(context.unreadPrivateMessages.isEmpty)
@@ -439,21 +318,9 @@ struct ChatPrivateConversationCoordinatorContextTests {
         coordinator.handleViewingThisChat(
             message,
             targetPeerID: stablePeerID,
-            key: noiseKey,
-            senderPubkey: "feedface00112233"
+            key: noiseKey
         )
         #expect(context.routedReadReceipts.count == 1)
-
-        // Without a Noise key, the receipt goes out via the geohash transport.
-        context.sentReadReceipts = []
-        coordinator.handleViewingThisChat(
-            message,
-            targetPeerID: stablePeerID,
-            key: nil,
-            senderPubkey: "feedface00112233"
-        )
-        #expect(context.geoReadReceipts.map(\.messageID) == ["read-1"])
-        #expect(context.sentReadReceipts == ["read-1"])
     }
 
     @Test @MainActor
@@ -548,11 +415,10 @@ struct ChatPrivateConversationCoordinatorContextTests {
         let peerID = PeerID(hexData: noiseKey)
 
         // First [FAVORITED] flips theyFavoritedUs: store write + announcement.
-        coordinator.handleFavoriteNotification("[FAVORITED]:npub1alice", from: peerID, senderNickname: "alice")
+        coordinator.handleFavoriteNotification("[FAVORITED]", from: peerID, senderNickname: "alice")
         #expect(context.peerFavoritedUsUpdates.count == 1)
         #expect(context.peerFavoritedUsUpdates.first?.noiseKey == noiseKey)
         #expect(context.peerFavoritedUsUpdates.first?.favorited == true)
-        #expect(context.peerFavoritedUsUpdates.first?.nostrPublicKey == "npub1alice")
         #expect(context.meshOnlySystemMessages == ["alice favorited you"])
 
         // Same state again: store write still happens, but no repeat announcement.
@@ -560,7 +426,7 @@ struct ChatPrivateConversationCoordinatorContextTests {
             noiseKey: noiseKey,
             theyFavoritedUs: true
         )
-        coordinator.handleFavoriteNotification("[FAVORITED]:npub1alice", from: peerID, senderNickname: "alice")
+        coordinator.handleFavoriteNotification("[FAVORITED]", from: peerID, senderNickname: "alice")
         #expect(context.peerFavoritedUsUpdates.count == 2)
         #expect(context.meshOnlySystemMessages == ["alice favorited you"])
 
@@ -570,78 +436,14 @@ struct ChatPrivateConversationCoordinatorContextTests {
         #expect(context.meshOnlySystemMessages == ["alice favorited you", "alice unfavorited you"])
     }
 
-    /// A Nostr DM whose sender resolved to a known noise key must be labeled
-    /// with the favorite's nickname, not the geohash-scoped anon fallback.
     @Test @MainActor
-    func nostrPrivateMessage_noiseKeyedConversationUsesFavoriteNickname() async {
-        let context = MockChatPrivateConversationContext()
-        let coordinator = ChatPrivateConversationCoordinator(context: context)
-        let noiseKey = Data(repeating: 0xDA, count: 32)
-        let convKey = PeerID(hexData: noiseKey)
-        let senderPubkey = "0badc0de00112233"
-        // No displayNamesByPubkey entry: the geo fallback would be "anon".
-        context.favoriteRelationshipsByNoiseKey[noiseKey] = makeFavoriteRelationship(
-            noiseKey: noiseKey,
-            nostrPublicKey: "npub1bob",
-            nickname: "bob",
-            isFavorite: true,
-            theyFavoritedUs: true
-        )
-
-        let payloadData = PrivateMessagePacket(messageID: "nostr-dm-1", content: "hello from afar").encode()!
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-
-        coordinator.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: MockChatPrivateConversationContext.dummyIdentity,
-            messageTimestamp: Date()
-        )
-
-        #expect(context.privateChats[convKey]?.first?.sender == "bob")
-    }
-
-    /// Over Nostr, [FAVORITED] markers arrive as embedded PMs on the convKey
-    /// path; they must update the relationship, not render as chat text.
-    @Test @MainActor
-    func nostrPrivateMessage_favoritedMarkerUpdatesRelationshipInsteadOfAppending() async {
-        let context = MockChatPrivateConversationContext()
-        let coordinator = ChatPrivateConversationCoordinator(context: context)
-        let noiseKey = Data(repeating: 0xEE, count: 32)
-        // The inbound pipeline resolves known favorites to their noise-key ID.
-        let convKey = PeerID(hexData: noiseKey)
-        let senderPubkey = "feedface99887766"
-        context.displayNamesByPubkey[senderPubkey] = "alice#1234"
-
-        let payloadData = PrivateMessagePacket(messageID: "fav-1", content: "[FAVORITED]:npub1alice").encode()!
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-
-        coordinator.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: MockChatPrivateConversationContext.dummyIdentity,
-            messageTimestamp: Date()
-        )
-
-        #expect(context.peerFavoritedUsUpdates.count == 1)
-        #expect(context.peerFavoritedUsUpdates.first?.noiseKey == noiseKey)
-        #expect(context.peerFavoritedUsUpdates.first?.favorited == true)
-        #expect(context.peerFavoritedUsUpdates.first?.nostrPublicKey == "npub1alice")
-        #expect(context.privateChats[convKey, default: []].isEmpty)
-        #expect(context.meshOnlySystemMessages == ["alice#1234 favorited you"])
-    }
-
-    @Test @MainActor
-    func sendPrivateMessage_routesViaMutualFavoriteNostrWhenPeerOffline() async {
+    func sendPrivateMessage_routesViaMutualFavoriteWhenPeerOffline() async {
         let context = MockChatPrivateConversationContext()
         let coordinator = ChatPrivateConversationCoordinator(context: context)
         let noiseKey = Data(repeating: 0xCD, count: 32)
         let peerID = PeerID(hexData: noiseKey)
         context.favoriteRelationshipsByNoiseKey[noiseKey] = makeFavoriteRelationship(
             noiseKey: noiseKey,
-            nostrPublicKey: "npub1bob",
             nickname: "bob",
             isFavorite: true,
             theyFavoritedUs: true
@@ -649,8 +451,9 @@ struct ChatPrivateConversationCoordinatorContextTests {
 
         coordinator.sendPrivateMessage("hello bob", to: peerID)
 
-        // Offline but mutual favorite with a Nostr key: routed, marked sent,
-        // and the nickname falls back to the favorite relationship.
+        // Offline but mutual favorite: still routed (router owns retained
+        // outbox/courier delivery), marked sent, and the nickname falls back
+        // to the favorite relationship.
         #expect(context.routedPrivateMessages.map(\.content) == ["hello bob"])
         #expect(context.privateChats[peerID]?.first?.deliveryStatus == .sent)
         #expect(context.privateChats[peerID]?.first?.recipientNickname == "bob")
@@ -658,17 +461,16 @@ struct ChatPrivateConversationCoordinatorContextTests {
 
     /// Same as above, but the conversation is keyed by the SHORT mesh ID —
     /// the DM window was opened while the peer was on mesh, then they went
-    /// out of range. The favorite must resolve via the derived short ID and
-    /// route over Nostr instead of failing "peer not reachable".
+    /// out of range. The favorite must resolve via the derived short ID
+    /// instead of failing "peer not reachable".
     @Test @MainActor
-    func sendPrivateMessage_routesViaNostrWhenMeshKeyedPeerGoesOffline() async {
+    func sendPrivateMessage_routesViaMutualFavoriteWhenMeshKeyedPeerGoesOffline() async {
         let context = MockChatPrivateConversationContext()
         let coordinator = ChatPrivateConversationCoordinator(context: context)
         let noiseKey = Data(repeating: 0xCE, count: 32)
         let shortID = PeerID(publicKey: noiseKey)
         context.favoriteRelationshipsByNoiseKey[noiseKey] = makeFavoriteRelationship(
             noiseKey: noiseKey,
-            nostrPublicKey: "npub1bob",
             nickname: "bob",
             isFavorite: true,
             theyFavoritedUs: true

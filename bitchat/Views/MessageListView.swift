@@ -18,9 +18,6 @@ struct MessageListView: View {
     @EnvironmentObject private var privateInboxModel: PrivateInboxModel
     @EnvironmentObject private var privateConversationModel: PrivateConversationModel
     @EnvironmentObject private var conversationUIModel: ConversationUIModel
-    @EnvironmentObject private var locationChannelsModel: LocationChannelsModel
-    @EnvironmentObject private var appChromeModel: AppChromeModel
-    @ObservedObject private var nearbyNotes = NearbyNotesCounter.shared
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.appTheme) private var theme
@@ -47,9 +44,6 @@ struct MessageListView: View {
     /// switches swap the timeline wholesale, so a count delta is only a
     /// "new messages" signal while the context is unchanged.
     @State private var unseenBaselineKey = ""
-    /// Whether this instance holds the nearby-notes counter active (mesh
-    /// public timeline only); balanced against activate/deactivate.
-    @State private var holdsNotesCounter = false
 
     @ThemedPalette private var palette
 
@@ -68,7 +62,7 @@ struct MessageListView: View {
             if let peer = privatePeer {
                 "dm:\(peer)"
             } else {
-                locationChannelsModel.selectedChannel.contextKey
+                "mesh"
             }
         }()
 
@@ -78,13 +72,6 @@ struct MessageListView: View {
         }
 
         VStack(spacing: 0) {
-        // Notes pinned to this place stay visible while chatting — a
-        // conversation starting must not hide what's left here.
-        if privatePeer == nil,
-           case .mesh = locationChannelsModel.selectedChannel,
-           nearbyNotes.noteCount > 0 {
-            notesHereStrip
-        }
         GeometryReader { geometry in
         ScrollViewReader { proxy in
             ScrollView {
@@ -213,9 +200,6 @@ struct MessageListView: View {
             .onChange(of: privateMessageCount(for: privatePeer)) { _ in
                 onPrivateChatsChange(proxy: proxy)
             }
-            .onChange(of: locationChannelsModel.selectedChannel) { newChannel in
-                onSelectedChannelChange(newChannel, proxy: proxy)
-            }
             .confirmationDialog(
                 selectedMessageSender.map { "@\($0)" } ?? String(localized: "content.actions.title", comment: "Fallback title for the message action sheet"),
                 isPresented: $showMessageActions,
@@ -275,10 +259,6 @@ struct MessageListView: View {
         }
         }
         }
-        .onAppear { updateNotesCounterHold() }
-        .onDisappear { releaseNotesCounterHold() }
-        .onChange(of: locationChannelsModel.selectedChannel) { _ in updateNotesCounterHold() }
-        .onChange(of: privatePeer) { _ in updateNotesCounterHold() }
         .environment(\.openURL, OpenURLAction { url in
             // Intercept custom cashu: links created in attributed text
             if let scheme = url.scheme?.lowercased(), scheme == "cashu" || scheme == "lightning" {
@@ -300,103 +280,28 @@ private extension MessageListView {
         if let peer = privatePeer {
             return "dm:\(peer)"
         }
-        return locationChannelsModel.selectedChannel.contextKey
-    }
-
-    /// Tappable strip above the mesh timeline while notes are pinned at this
-    /// place: opens the notices sheet on the geo tab.
-    var notesHereStrip: some View {
-        let text: String = nearbyNotes.noteCount == 1
-            ? String(localized: "content.empty.notes_one", comment: "Hint when exactly one note was left at this place")
-            : String(
-                format: String(localized: "content.empty.notes_many", comment: "Hint counting notes left at this place"),
-                locale: .current,
-                nearbyNotes.noteCount
-            )
-
-        return Button {
-            appChromeModel.presentNotices(geoTab: true)
-        } label: {
-            HStack(spacing: 6) {
-                Text(verbatim: "📍 \(text)")
-                    .bitchatFont(size: 12)
-                    .foregroundColor(palette.primary)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.bitchatSystem(size: 10))
-                    .foregroundColor(palette.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .background(palette.secondary.opacity(0.08))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// The nearby-notes counter is held whenever the mesh public timeline is
-    /// showing — the strip needs a live count before it can decide to exist.
-    /// Holding is not subscribing: nothing hits the relays until an explicit
-    /// act reveals the counter (tap-to-reveal).
-    func updateNotesCounterHold() {
-        let shouldHold = privatePeer == nil && locationChannelsModel.selectedChannel.isMesh
-        guard shouldHold != holdsNotesCounter else { return }
-        holdsNotesCounter = shouldHold
-        if shouldHold {
-            NearbyNotesCounter.shared.activate()
-        } else {
-            NearbyNotesCounter.shared.deactivate()
-        }
-    }
-
-    func releaseNotesCounterHold() {
-        guard holdsNotesCounter else { return }
-        holdsNotesCounter = false
-        NearbyNotesCounter.shared.deactivate()
+        return "mesh"
     }
 
     /// True when the mesh timeline holds nothing but archived echoes and
     /// system lines — no live conversation yet, so the ambient layer still
     /// applies.
     private func showsAmbientFooter(messageItems: [MessageDisplayItem]) -> Bool {
-        guard case .mesh = locationChannelsModel.selectedChannel,
-              !messageItems.isEmpty else { return false }
+        guard privatePeer == nil, !messageItems.isEmpty else { return false }
         return messageItems.allSatisfy { $0.message.isArchivedEcho || $0.message.sender == "system" }
     }
 
-    /// Terminal-styled narration for an empty public timeline: says which
-    /// channel this is, that the app is waiting for peers, and where to go
-    /// next. Rendered inside the ScrollView; disappears with the first row.
-    /// The mesh case fills the visible chat height so its radar can center
+    /// Terminal-styled narration for an empty public timeline: says the app
+    /// is waiting for peers. Rendered inside the ScrollView; disappears with
+    /// the first row. Fills the visible chat height so its radar can center
     /// in the space below the text.
     func publicEmptyState(fillHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            switch locationChannelsModel.selectedChannel {
-            case .mesh:
-                MeshEmptyStateView(fillHeight: max(0, fillHeight - 24))
-            case .location(let channel):
-                emptyStateLine(
-                    String(
-                        format: String(localized: "content.empty.location_intro", comment: "First line of an empty geohash timeline naming the channel"),
-                        locale: .current,
-                        channel.geohash
-                    )
-                )
-                emptyStateLine(String(localized: "content.empty.switch_hint", comment: "Empty timeline hint pointing at the channel switcher and the help screen"))
-            }
+            MeshEmptyStateView(fillHeight: max(0, fillHeight - 24))
         }
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    func emptyStateLine(_ text: String) -> some View {
-        // Non-breaking space before the closing asterisk so a tight wrap
-        // can't orphan a lone "*" onto its own line.
-        Text(verbatim: "* \(text)\u{00A0}*")
-            .bitchatFont(size: 13)
-            .foregroundColor(palette.secondary.opacity(0.9))
-            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Messages the unseen counters may book as "new": rows that render as
@@ -525,7 +430,7 @@ private extension MessageListView {
             if let peer = privatePeer {
                 "dm:\(peer)"
             } else {
-                locationChannelsModel.selectedChannel.contextKey
+                "mesh"
             }
         }()
         let preserveID = "\(contextKey)|\(message.id)"
@@ -569,12 +474,6 @@ private extension MessageListView {
                 showMessageActions = true
             }
 
-        case "geohash":
-            let gh = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
-            let allowed = Set("0123456789bcdefghjkmnpqrstuvwxyz")
-            guard (2...12).contains(gh.count), gh.allSatisfy({ allowed.contains($0) }) else { return }
-            locationChannelsModel.openLocationChannel(for: gh)
-
         default:
             return
         }
@@ -601,7 +500,7 @@ private extension MessageListView {
             return "dm:\(peer)|\(last)"
         }
         if let last = publicChatModel.messages.last?.id {
-            return "\(locationChannelsModel.selectedChannel.contextKey)|\(last)"
+            return "mesh|\(last)"
         }
         return nil
     }
@@ -628,8 +527,7 @@ private extension MessageListView {
 
         func scrollIfNeeded(date: Date) {
             lastScrollTime = date
-            let contextKey = locationChannelsModel.selectedChannel.contextKey
-            if let target = messages.last.map({ "\(contextKey)|\($0.id)" }) {
+            if let target = messages.last.map({ "mesh|\($0.id)" }) {
                 proxy.scrollTo(target, anchor: .bottom)
             }
         }
@@ -692,33 +590,6 @@ private extension MessageListView {
         }
     }
 
-    func onSelectedChannelChange(_ channel: ChannelID, proxy: ScrollViewProxy) {
-        // When switching to a new geohash channel, scroll to the bottom
-        guard privatePeer == nil else { return }
-        // Invalidate the unseen baseline: the timeline is about to swap (or
-        // already has — the ordering of this onChange vs the count onChange
-        // is not guaranteed), so the next count observation re-baselines
-        // instead of booking the cross-channel difference as "new".
-        unseenCount = 0
-        unseenBaselineKey = ""
-        // Entering any public channel shows its latest messages: a channel
-        // switch swaps the timeline wholesale, so the prior scroll offset is
-        // meaningless. Landing at the bottom keeps isAtBottom honest (no
-        // stale jump-to-latest pill) and matches standard chat behavior.
-        isAtBottom = true
-        windowCountPublic = TransportConfig.uiWindowInitialCountPublic
-        let contextKey: String
-        switch channel {
-        case .mesh:
-            contextKey = "mesh"
-        case .location(let ch):
-            contextKey = "geo:\(ch.geohash)"
-        }
-        if let target = publicChatModel.messages.last?.id.map({ "\(contextKey)|\($0)" }) {
-            proxy.scrollTo(target, anchor: .bottom)
-        }
-    }
-
     func conversationMessages(for privatePeer: PeerID?) -> [BitchatMessage] {
         if let privatePeer {
             return privateInboxModel.messages(for: privatePeer)
@@ -728,15 +599,6 @@ private extension MessageListView {
 
     func privateMessageCount(for privatePeer: PeerID?) -> Int {
         conversationMessages(for: privatePeer).count
-    }
-}
-
-private extension ChannelID {
-    var contextKey: String {
-        switch self {
-        case .mesh:             "mesh"
-        case .location(let ch): "geo:\(ch.geohash)"
-        }
     }
 }
 

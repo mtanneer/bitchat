@@ -8,7 +8,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct UnifiedPeerServiceTests {
 
@@ -16,8 +16,7 @@ struct UnifiedPeerServiceTests {
     func getFingerprint_prefersMeshService() async {
         let transport = MockTransport()
         let identity = TestIdentityManager()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: identity)
+        let service = UnifiedPeerService(meshService: transport, identityManager: identity)
 
         let peerID = PeerID(str: "00000000000000CC")
         transport.peerFingerprints[peerID] = "fp-1"
@@ -31,8 +30,7 @@ struct UnifiedPeerServiceTests {
     func isBlocked_usesSocialIdentity() async {
         let transport = MockTransport()
         let identity = TestIdentityManager()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: identity)
+        let service = UnifiedPeerService(meshService: transport, identityManager: identity)
 
         let peerID = PeerID(str: "00000000000000DD")
         let fingerprint = "fp-blocked"
@@ -46,8 +44,7 @@ struct UnifiedPeerServiceTests {
     func setBlocked_persistsByFingerprintAndToggles() async {
         let transport = MockTransport()
         let identity = TestIdentityManager()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: identity)
+        let service = UnifiedPeerService(meshService: transport, identityManager: identity)
 
         let peerID = PeerID(str: "00000000000000EE")
         let fingerprint = "fp-target"
@@ -81,8 +78,7 @@ struct UnifiedPeerServiceTests {
         let favoritesService = FavoritesPersistenceService.shared
 
         let transport = MockTransport()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: TestIdentityManager())
+        let service = UnifiedPeerService(meshService: transport, identityManager: TestIdentityManager())
 
         let noiseKey = Data(repeating: 0xAB, count: 32)
         favoritesService.addFavorite(peerNoisePublicKey: noiseKey, peerNickname: "alice")
@@ -117,8 +113,7 @@ struct UnifiedPeerServiceTests {
         let favoritesService = FavoritesPersistenceService.shared
 
         let transport = MockTransport()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: TestIdentityManager())
+        let service = UnifiedPeerService(meshService: transport, identityManager: TestIdentityManager())
 
         let noiseKey = Data(repeating: 0xCD, count: 32)
         favoritesService.addFavorite(peerNoisePublicKey: noiseKey, peerNickname: "bob")
@@ -162,8 +157,7 @@ struct UnifiedPeerServiceTests {
         let favoritesService = FavoritesPersistenceService.shared
 
         let transport = MockTransport()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: TestIdentityManager())
+        let service = UnifiedPeerService(meshService: transport, identityManager: TestIdentityManager())
 
         let noiseKey = Data(repeating: 0xEF, count: 32)
         favoritesService.addFavorite(peerNoisePublicKey: noiseKey, peerNickname: "dave")
@@ -186,8 +180,7 @@ struct UnifiedPeerServiceTests {
     func setBlocked_unknownIdentityReturnsNil() async {
         let transport = MockTransport()
         let identity = TestIdentityManager()
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
-        let service = UnifiedPeerService(meshService: transport, idBridge: idBridge, identityManager: identity)
+        let service = UnifiedPeerService(meshService: transport, identityManager: identity)
 
         // No fingerprint resolvable for this peer (offline & unknown).
         let peerID = PeerID(str: "00000000000000FF")

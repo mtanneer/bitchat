@@ -6,6 +6,31 @@ import UIKit
 import AppKit
 #endif
 
+/// Shared section header for the people sheet: a small glyph + label pair,
+/// identical shape for every section.
+struct PeopleSectionHeader: View {
+    @ThemedPalette private var palette
+    let icon: String
+    let iconColor: Color
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.bitchatSystem(size: 10))
+                .foregroundColor(iconColor)
+            Text(verbatim: title)
+                .bitchatFont(size: 11, weight: .semibold)
+                .foregroundColor(palette.secondary)
+        }
+        .padding(.horizontal)
+        .padding(.top, 12)
+        .padding(.bottom, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
 struct ContentPeopleSheetView: View {
     @EnvironmentObject private var appChromeModel: AppChromeModel
     @EnvironmentObject private var privateConversationModel: PrivateConversationModel
@@ -132,7 +157,6 @@ private struct ContentPeopleListView: View {
     @EnvironmentObject private var privateConversationModel: PrivateConversationModel
     @EnvironmentObject private var verificationModel: VerificationModel
     @EnvironmentObject private var conversationUIModel: ConversationUIModel
-    @EnvironmentObject private var locationChannelsModel: LocationChannelsModel
     @EnvironmentObject private var peerListModel: PeerListModel
     @Environment(\.dismiss) private var dismiss
     @ThemedPalette private var palette
@@ -149,21 +173,19 @@ private struct ContentPeopleListView: View {
                         .bitchatFont(size: 18)
                         .foregroundColor(palette.primary)
                     Spacer()
-                    if case .mesh = locationChannelsModel.selectedChannel {
-                        Button(action: { showVerifySheet = true }) {
-                            Image(systemName: "qrcode")
-                                .font(.bitchatSystem(size: 14))
-                        }
-                        .buttonStyle(.plain)
-                        // .help maps to the accessibility *hint* on iOS, so the
-                        // button still needs a spoken name.
-                        .accessibilityLabel(
-                            String(localized: "content.accessibility.verification", comment: "Accessibility label for the verification QR button")
-                        )
-                        .help(
-                            String(localized: "content.help.verification", comment: "Help text for verification button")
-                        )
+                    Button(action: { showVerifySheet = true }) {
+                        Image(systemName: "qrcode")
+                            .font(.bitchatSystem(size: 14))
                     }
+                    .buttonStyle(.plain)
+                    // .help maps to the accessibility *hint* on iOS, so the
+                    // button still needs a spoken name.
+                    .accessibilityLabel(
+                        String(localized: "content.accessibility.verification", comment: "Accessibility label for the verification QR button")
+                    )
+                    .help(
+                        String(localized: "content.help.verification", comment: "Help text for verification button")
+                    )
                     SheetCloseButton {
                         withAnimation(.easeInOut(duration: TransportConfig.uiAnimationMediumSeconds)) {
                             dismiss()
@@ -173,15 +195,8 @@ private struct ContentPeopleListView: View {
                         }
                     }
                 }
-
-                // The mesh sheet titles its sections inline (#mesh / across
-                // the bridge / groups) — no subtitle or count up here.
-                // Location channels keep their geohash subtitle.
-                if case .location(let channel) = locationChannelsModel.selectedChannel {
-                    Text(verbatim: "#\(channel.geohash.lowercased())")
-                        .bitchatFont(size: 12)
-                        .foregroundColor(palette.locationAccent)
-                }
+                // The sheet titles its sections inline (#mesh / groups) — no
+                // subtitle or count up here.
             }
             .padding(.horizontal, 16)
             .padding(.top, 16)
@@ -193,48 +208,37 @@ private struct ContentPeopleListView: View {
                 // top 12 / bottom 4, rows vertical 4), so inter-child spacing
                 // here would make the first section's gap read differently.
                 VStack(alignment: .leading, spacing: 0) {
-                    if case .location = locationChannelsModel.selectedChannel {
-                        GeohashPeopleList(
-                            onTapPerson: {
-                                showSidebar = true
+                    PeopleSectionHeader(
+                        icon: "antenna.radiowaves.left.and.right",
+                        iconColor: palette.accentBlue,
+                        title: "#mesh"
+                    )
+                    MeshPeerList(
+                        onTapPeer: { peerID in
+                            peerListModel.startConversation(with: peerID)
+                            showSidebar = true
+                        },
+                        onToggleFavorite: { peerID in
+                            peerListModel.toggleFavorite(peerID: peerID)
+                        },
+                        onShowFingerprint: { peerID in
+                            appChromeModel.showFingerprint(for: peerID)
+                        },
+                        onToggleBlock: { peer in
+                            if peer.isBlocked {
+                                conversationUIModel.unblock(peerID: peer.peerID, displayName: peer.displayName)
+                            } else {
+                                conversationUIModel.block(peerID: peer.peerID, displayName: peer.displayName)
                             }
-                        )
-                    } else {
-                        PeopleSectionHeader(
-                            icon: "antenna.radiowaves.left.and.right",
-                            iconColor: palette.accentBlue,
-                            title: "#mesh"
-                        )
-                        MeshPeerList(
-                            onTapPeer: { peerID in
-                                peerListModel.startConversation(with: peerID)
-                                showSidebar = true
-                            },
-                            onToggleFavorite: { peerID in
-                                peerListModel.toggleFavorite(peerID: peerID)
-                            },
-                            onShowFingerprint: { peerID in
-                                appChromeModel.showFingerprint(for: peerID)
-                            },
-                            onToggleBlock: { peer in
-                                if peer.isBlocked {
-                                    conversationUIModel.unblock(peerID: peer.peerID, displayName: peer.displayName)
-                                } else {
-                                    conversationUIModel.block(peerID: peer.peerID, displayName: peer.displayName)
-                                }
-                            }
-                        )
-                        // People in this area but beyond radio range, and
-                        // private groups: one sheet for the whole room.
-                        BridgePeopleList()
-                        GroupChatList(
-                            groups: peerListModel.groupRows,
-                            onTapGroup: { peerID in
-                                peerListModel.startConversation(with: peerID)
-                                showSidebar = true
-                            }
-                        )
-                    }
+                        }
+                    )
+                    GroupChatList(
+                        groups: peerListModel.groupRows,
+                        onTapGroup: { peerID in
+                            peerListModel.startConversation(with: peerID)
+                            showSidebar = true
+                        }
+                    )
                 }
                 .padding(.top, 4)
                 // Full width even when every row is narrow (empty mesh, no
@@ -516,11 +520,6 @@ private struct ContentPrivateHeaderInfoButton: View {
                             .font(.bitchatSystem(size: 14))
                             .foregroundColor(palette.primary)
                             .accessibilityLabel(String(localized: "content.accessibility.reachable_mesh", comment: "Accessibility label for mesh-reachable peer indicator"))
-                    case .nostrAvailable:
-                        Image(systemName: "globe")
-                            .font(.bitchatSystem(size: 14))
-                            .foregroundColor(.purple)
-                            .accessibilityLabel(String(localized: "content.accessibility.available_nostr", comment: "Accessibility label for Nostr-available peer indicator"))
                     case .offline:
                         // Slashed variant of the connected glyph — offline as
                         // the negation of connected, no text label (a leading

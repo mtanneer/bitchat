@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Thread-safe: the coordinator invokes it on its private serial queue (that
 /// the calls happen off the main thread is itself under test) while the test

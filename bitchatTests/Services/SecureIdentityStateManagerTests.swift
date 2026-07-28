@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 final class SecureIdentityStateManagerTests: XCTestCase {
     func test_upsertCryptographicIdentity_withoutClaimedNicknameDoesNotCreateSocialIdentity() async {

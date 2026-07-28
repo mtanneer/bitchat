@@ -10,7 +10,7 @@ import Testing
 import Foundation
 import CryptoKit
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Wire format and signature binding for gossiped one-time prekey bundles.
 struct PrekeyBundleTests {

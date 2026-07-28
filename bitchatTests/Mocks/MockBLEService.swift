@@ -9,7 +9,7 @@
 import Foundation
 import CoreBluetooth
 @testable import BitFoundation // to avoid unnecessary public's
-@testable import bitchat
+@testable import PlaneChat
 
 /// In-memory BLE test harness used by E2E/Integration tests.
 ///

@@ -12,26 +12,19 @@ struct BitchatPeer: Equatable {
     
     // Favorite-related properties
     var favoriteStatus: FavoritesPersistenceService.FavoriteRelationship?
-    
-    // Nostr identity (if known)
-    var nostrPublicKey: String?
-    
+
     // Connection state
     enum ConnectionState {
         case bluetoothConnected
         case meshReachable      // Seen via mesh recently, not directly connected
-        case nostrAvailable     // Mutual favorite, reachable via Nostr
         case offline            // Not connected via any transport
     }
-    
+
     var connectionState: ConnectionState {
         if isConnected {
             return .bluetoothConnected
         } else if isReachable {
             return .meshReachable
-        } else if favoriteStatus?.isMutual == true {
-            // Mutual favorites can communicate via Nostr when offline
-            return .nostrAvailable
         } else {
             return .offline
         }
@@ -60,8 +53,6 @@ struct BitchatPeer: Equatable {
             return "📻" // Radio icon for mesh connection
         case .meshReachable:
             return "📡" // Antenna for mesh reachable
-        case .nostrAvailable:
-            return "🌐" // Purple globe for Nostr
         case .offline:
             if theyFavoritedUs && !isFavorite {
                 return "🌙" // Crescent moon - they favorited us but we didn't reciprocate
@@ -88,7 +79,6 @@ struct BitchatPeer: Equatable {
         
         // Load favorite status - will be set later by the manager
         self.favoriteStatus = nil
-        self.nostrPublicKey = nil
     }
     
     static func == (lhs: BitchatPeer, rhs: BitchatPeer) -> Bool {

@@ -68,13 +68,4 @@ enum ConversationID: Hashable, Sendable {
     case mesh
     case geohash(String)
     case direct(PeerHandle)
-
-    init(channelID: ChannelID) {
-        switch channelID {
-        case .mesh:
-            self = .mesh
-        case .location(let channel):
-            self = .geohash(channel.geohash.lowercased())
-        }
-    }
 }

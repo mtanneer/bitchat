@@ -15,7 +15,7 @@ import Foundation
 import BitFoundation
 import Testing
 
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 

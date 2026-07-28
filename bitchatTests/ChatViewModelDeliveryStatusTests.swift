@@ -8,21 +8,18 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Test Helpers
 
 @MainActor
 private func makeTestableViewModel() -> (viewModel: ChatViewModel, transport: MockTransport) {
     let keychain = MockKeychain()
-    let keychainHelper = MockKeychainHelper()
-    let idBridge = NostrIdentityBridge(keychain: keychainHelper)
     let identityManager = MockIdentityManager(keychain)
     let transport = MockTransport()
 
     let viewModel = ChatViewModel(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
         transport: transport
     )

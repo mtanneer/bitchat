@@ -1,5 +1,5 @@
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLEScanDutyPolicyTests {
     @Test

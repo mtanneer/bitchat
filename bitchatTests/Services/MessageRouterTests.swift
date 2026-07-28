@@ -8,7 +8,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct MessageRouterTests {
 

@@ -14,7 +14,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 
@@ -25,9 +25,7 @@ private final class MockChatOutgoingContext: ChatOutgoingContext {
     // Identity & channel state
     var nickname = "me"
     var myPeerID = PeerID(str: "0011223344556677")
-    var activeChannel: ChannelID = .mesh
     var selectedPrivateChatPeer: PeerID?
-    var isTeleported = false
 
     // Commands & private messages
     var selectedPeerAfterUpdate: PeerID??
@@ -75,36 +73,11 @@ private final class MockChatOutgoingContext: ChatOutgoingContext {
     // Outbound routing
     private(set) var recordedActivityKeys: [String] = []
     private(set) var sentMeshMessages: [(content: String, mentions: [String], messageID: String, timestamp: Date)] = []
-    private(set) var sentGeohashContexts: [ChatViewModel.GeoOutgoingContext] = []
 
     func recordPublicActivity(forChannelKey key: String) { recordedActivityKeys.append(key) }
 
     func sendMeshMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date) {
         sentMeshMessages.append((content, mentions, messageID, timestamp))
-    }
-
-    func sendGeohash(context: ChatViewModel.GeoOutgoingContext) {
-        sentGeohashContexts.append(context)
-    }
-
-    private(set) var bridgedMessages: [(content: String, senderPeerID: PeerID, timestamp: Date)] = []
-    func bridgeOutgoingPublicMessage(_ content: String, senderPeerID: PeerID, timestamp: Date) {
-        bridgedMessages.append((content, senderPeerID, timestamp))
-    }
-
-    // Geohash identity
-    struct IdentityUnavailable: Error {}
-    var deriveNostrIdentityError: Error?
-    static let dummyIdentity = NostrIdentity(
-        privateKey: Data(repeating: 0x11, count: 32),
-        publicKey: Data(repeating: 0x22, count: 32),
-        npub: "npub1mock",
-        createdAt: Date(timeIntervalSince1970: 0)
-    )
-
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity {
-        if let deriveNostrIdentityError { throw deriveNostrIdentityError }
-        return Self.dummyIdentity
     }
 }
 
@@ -188,70 +161,4 @@ struct ChatOutgoingCoordinatorContextTests {
         #expect(sent.timestamp == echo.message.timestamp)
     }
 
-    @Test @MainActor
-    func sendMessage_onLocationChannel_sendsGeohashEventOrFailsWithSystemMessage() async {
-        let context = MockChatOutgoingContext()
-        let coordinator = ChatOutgoingCoordinator(context: context)
-        let channel = GeohashChannel(level: .city, geohash: "u4pruydq")
-        context.activeChannel = .location(channel)
-        context.isTeleported = true
-
-        coordinator.sendMessage("hello geo")
-        // Geohash sends mine a NIP-13 nonce tag off-main before echoing and
-        // sending; await the send task, then drain the main queue.
-        await coordinator.geohashMiningTask?.value
-        await drainMainActorTasks()
-
-        // Local echo carries the geohash sender suffix (#last-4-of-pubkey) and
-        // the signed event's ID; the send context targets the same channel.
-        #expect(context.appendedPublicMessages.count == 1)
-        let echo = context.appendedPublicMessages[0].message
-        #expect(context.appendedPublicMessages[0].conversationID == .geohash("u4pruydq"))
-        #expect(echo.sender == "me#2222")
-        #expect(context.recordedActivityKeys == ["geo:u4pruydq"])
-        #expect(context.sentGeohashContexts.count == 1)
-        let geoContext = context.sentGeohashContexts[0]
-        #expect(geoContext.channel == channel)
-        #expect(geoContext.teleported)
-        #expect(geoContext.event.id == echo.id)
-
-        // Identity derivation failure: system message, no echo, no send.
-        context.deriveNostrIdentityError = MockChatOutgoingContext.IdentityUnavailable()
-        coordinator.sendMessage("doomed")
-        await drainMainActorTasks()
-        #expect(context.systemMessages.count == 1)
-        #expect(context.appendedPublicMessages.count == 1)
-        #expect(context.sentGeohashContexts.count == 1)
-    }
-
-    @Test @MainActor
-    func sendMessage_onLocationChannel_serializesRapidSendsInSendOrder() async {
-        let context = MockChatOutgoingContext()
-        let coordinator = ChatOutgoingCoordinator(context: context)
-        let channel = GeohashChannel(level: .city, geohash: "u4pruydq")
-        context.activeChannel = .location(channel)
-
-        // Two back-to-back sends. The first carries much larger content, so
-        // its NIP-13 mining hashes a bigger event per attempt and runs longer
-        // than the second's. Without serialization the second (faster) task
-        // could finish first and reorder both the local timeline and the
-        // relayed events. The coordinator chains the mining tasks — each send
-        // awaits the previous send's task before it echoes and relays — so the
-        // visible order must always match the send order.
-        let first = "first " + String(repeating: "x", count: 4000)
-        let second = "second"
-        coordinator.sendMessage(first)
-        coordinator.sendMessage(second)
-
-        // The stored task is the second send, which awaits the first.
-        await coordinator.geohashMiningTask?.value
-        await drainMainActorTasks()
-
-        // Local echoes land in send order…
-        #expect(context.appendedPublicMessages.map(\.message.content) == [first, second])
-        // …and so do the relayed events (IDs match the echoes 1:1, in order).
-        #expect(context.sentGeohashContexts.count == 2)
-        #expect(context.sentGeohashContexts.map(\.event.id)
-                == context.appendedPublicMessages.map(\.message.id))
-    }
 }

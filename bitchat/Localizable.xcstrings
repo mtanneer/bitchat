@@ -12086,7 +12086,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "erases all messages, keys, and identity. triple-tapping the bitchat/ logo does the same, instantly."
+            "value" : "erases all messages, keys, and identity. triple-tapping the PlaneChat/ logo does the same, instantly."
           }
         },
         "es" : {
@@ -72502,7 +72502,7 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "restart bitchat to apply the new language"
+            "value" : "restart PlaneChat to apply the new language"
           }
         },
         "es" : {

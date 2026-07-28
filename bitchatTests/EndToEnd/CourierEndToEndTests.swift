@@ -11,7 +11,7 @@ import Foundation
 import Combine
 import CoreBluetooth
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Three-node courier flow exercised through real BLEService instances with
 /// packets ferried in-process: Alice deposits a sealed envelope with Carol
@@ -70,10 +70,8 @@ struct CourierEndToEndTests {
     private func makeService(identityManager: MockIdentityManager? = nil) -> BLEService {
         let keychain = MockKeychain()
         let identityManager = identityManager ?? MockIdentityManager(keychain)
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
         let service = BLEService(
             keychain: keychain,
-            idBridge: idBridge,
             identityManager: identityManager,
             initializeBluetoothManagers: false
         )

@@ -10,7 +10,7 @@ import Testing
 import Foundation
 import CoreBluetooth
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Forward-secret courier flow through real BLEService instances: Bob gossips
 /// a signed prekey bundle, Alice verifies and caches it, seals to a one-time
@@ -60,7 +60,6 @@ struct PrekeyEndToEndTests {
         let keychain = MockKeychain()
         let service = BLEService(
             keychain: keychain,
-            idBridge: NostrIdentityBridge(keychain: MockKeychainHelper()),
             identityManager: MockIdentityManager(keychain),
             initializeBluetoothManagers: false
         )

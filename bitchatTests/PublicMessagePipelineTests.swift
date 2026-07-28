@@ -11,7 +11,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 private final class TestPipelineDelegate: PublicMessagePipelineDelegate {

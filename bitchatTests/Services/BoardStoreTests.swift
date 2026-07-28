@@ -10,7 +10,7 @@ import BitFoundation
 import CryptoKit
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct BoardStoreTests {
 

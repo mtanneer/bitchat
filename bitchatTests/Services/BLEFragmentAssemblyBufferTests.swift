@@ -1,7 +1,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLEFragmentAssemblyBufferTests {
     @Test

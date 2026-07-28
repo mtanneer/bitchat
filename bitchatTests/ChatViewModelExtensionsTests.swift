@@ -14,21 +14,18 @@ import UIKit
 import AppKit
 #endif
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Test Helpers
 
 @MainActor
 private func makeTestableViewModel() -> (viewModel: ChatViewModel, transport: MockTransport) {
     let keychain = MockKeychain()
-    let keychainHelper = MockKeychainHelper()
-    let idBridge = NostrIdentityBridge(keychain: keychainHelper)
     let identityManager = MockIdentityManager(keychain)
     let transport = MockTransport()
 
     let viewModel = ChatViewModel(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
         transport: transport
     )
@@ -190,649 +187,7 @@ struct ChatViewModelPrivateChatExtensionTests {
         #expect(viewModel.privateChats[newPeerID]?.first?.content == "Old message")
         #expect(viewModel.privateChats[oldPeerID] == nil) // Old chat removed
     }
-    
-    @Test @MainActor
-    func isMessageBlocked_filtersBlockedUsers() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let blockedPeerID = PeerID(str: "BLOCKED_PEER")
-        
-        // Block the peer
-        // MockIdentityManager stores state based on fingerprint
-        // We need to map peerID to a fingerprint
-        viewModel.peerIDToPublicKeyFingerprint[blockedPeerID] = "fp_blocked"
-        viewModel.identityManager.setBlocked("fp_blocked", isBlocked: true)
-        
-        // Also ensure UnifiedPeerService can resolve the fingerprint.
-        // UnifiedPeerService uses its own cache or delegates to meshService/Peer list.
-        // Since we are mocking, we can't easily inject into UnifiedPeerService's internal cache.
-        // However, ChatViewModel's isMessageBlocked uses:
-        // 1. isPeerBlocked(peerID) -> unifiedPeerService.isBlocked(peerID) -> getFingerprint -> identityManager.isBlocked
-        
-        // We need UnifiedPeerService.getFingerprint(for: blockedPeerID) to return "fp_blocked"
-        // UnifiedPeerService tries: cache -> meshService -> getPeer
-        
-        // Option 1: Mock the transport (meshService) to return the fingerprint
-        // (viewModel.transport is MockTransport, but UnifiedPeerService holds a reference to it)
-        // Check if MockTransport has `getFingerprint`
-        
-        // If not, we might need to rely on the fallback: ChatViewModel.isMessageBlocked also checks Nostr blocks.
-        
-        // Let's assume MockTransport needs `getFingerprint` implementation or update it.
-        // For now, let's try to verify if `MockTransport` supports `getFingerprint`.
-        
-        // Actually, let's just use the Nostr block path which is simpler and also tested here.
-        // "Check geohash (Nostr) blocks using mapping to full pubkey"
-        
-        let hexPubkey = "0000000000000000000000000000000000000000000000000000000000000001"
-        viewModel.registerNostrKeyMapping(hexPubkey, for: blockedPeerID)
-        viewModel.identityManager.setNostrBlocked(hexPubkey, isBlocked: true)
-        
-        // Force isGeoChat/isGeoDM check to be true by setting prefix?
-        // Or ensure the logic covers it.
-        // The logic is:
-        // if peerID.isGeoChat || peerID.isGeoDM { check nostr }
-        // We need a peerID that looks like geo.
-        
-        let geoPeerID = PeerID(nostr_: hexPubkey)
-        viewModel.registerNostrKeyMapping(hexPubkey, for: geoPeerID)
-        
-        let geoMessage = BitchatMessage(
-            id: "msg-geo-blocked",
-            sender: "BlockedGeoUser",
-            content: "Spam",
-            timestamp: Date(),
-            isRelay: false,
-            isPrivate: true,
-            senderPeerID: geoPeerID
-        )
-        
-        #expect(viewModel.isMessageBlocked(geoMessage))
-    }
 }
-
-// MARK: - Nostr Extension Tests
-
-struct ChatViewModelNostrExtensionTests {
-    
-    @Test @MainActor
-    func switchLocationChannel_mesh_clearsGeo() async {
-        let (viewModel, _) = makeTestableViewModel()
-        
-        // Setup some geo state
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: "u4pruydq")))
-        #expect(viewModel.currentGeohash == "u4pruydq")
-        
-        // Switch to mesh
-        viewModel.switchLocationChannel(to: .mesh)
-        
-        #expect(viewModel.activeChannel == .mesh)
-        #expect(viewModel.currentGeohash == nil)
-    }
-    
-    @Test @MainActor
-    func subscribeNostrEvent_addsToTimeline_ifMatchesGeohash() async throws {
-        let geohash = "u4pruydq"
-        let channel = ChannelID.location(GeohashChannel(level: .city, geohash: geohash))
-
-        LocationChannelManager.shared.select(channel)
-        defer { LocationChannelManager.shared.select(.mesh) }
-
-        _ = await TestHelpers.waitUntil({ LocationChannelManager.shared.selectedChannel == channel })
-
-        let (viewModel, _) = makeTestableViewModel()
-        
-        _ = await TestHelpers.waitUntil({ viewModel.activeChannel == channel })
-        
-        let signer = try NostrIdentity.generate()
-        let event = NostrEvent(
-            pubkey: signer.publicKeyHex,
-            createdAt: Date(),
-            kind: .ephemeralEvent,
-            tags: [["g", geohash]],
-            content: "Hello Geo"
-        )
-        let signed = try event.sign(with: signer.schnorrSigningKey())
-        viewModel.handleNostrEvent(signed)
-        
-        let didAppend = await TestHelpers.waitUntil({
-            viewModel.publicMessagePipeline.flushIfNeeded()
-            if viewModel.messages.contains(where: { $0.content == "Hello Geo" }) { return true }
-            // LocationChannelManager is a process-wide singleton: a suite
-            // running in parallel (e.g. CommandProcessorTests) can flip the
-            // selected channel mid-test, which reroutes or drops the event
-            // permanently — no amount of waiting recovers it. Re-assert the
-            // channel and redeliver on each poll: every channel switch clears
-            // the processed-event set and the store dedups by message ID, so
-            // redelivery is idempotent and interference heals on the next
-            // poll while a genuine failure still times out.
-            if LocationChannelManager.shared.selectedChannel != channel {
-                LocationChannelManager.shared.select(channel)
-            }
-            if viewModel.activeChannel == channel {
-                viewModel.handleNostrEvent(signed)
-            }
-            return false
-        }, timeout: TestConstants.longTimeout)
-        #expect(didAppend)
-    }
-
-    @Test @MainActor
-    func handleNostrEvent_ignoresRecentSelfEcho() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        let identity = try viewModel.idBridge.deriveIdentity(forGeohash: geohash)
-
-        let event = NostrEvent(
-            pubkey: identity.publicKeyHex,
-            createdAt: Date(),
-            kind: .ephemeralEvent,
-            tags: [["g", geohash]],
-            content: "Self echo"
-        )
-        let signed = try event.sign(with: identity.schnorrSigningKey())
-        viewModel.handleNostrEvent(signed)
-
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-
-        #expect(!viewModel.messages.contains { $0.content == "Self echo" })
-    }
-
-    @Test @MainActor
-    func handleNostrEvent_skipsBlockedSender() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let blockedIdentity = try NostrIdentity.generate()
-        let blockedPubkey = blockedIdentity.publicKeyHex
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        viewModel.identityManager.setNostrBlocked(blockedPubkey, isBlocked: true)
-
-        let event = NostrEvent(
-            pubkey: blockedPubkey,
-            createdAt: Date(),
-            kind: .ephemeralEvent,
-            tags: [["g", geohash]],
-            content: "Blocked"
-        )
-        let signed = try event.sign(with: blockedIdentity.schnorrSigningKey())
-        viewModel.handleNostrEvent(signed)
-
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-
-        #expect(!viewModel.messages.contains { $0.content == "Blocked" })
-    }
-
-    @Test @MainActor
-    func handleNostrEvent_rejectsInvalidSignature() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let identity = try NostrIdentity.generate()
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-
-        let event = NostrEvent(
-            pubkey: identity.publicKeyHex,
-            createdAt: Date(),
-            kind: .ephemeralEvent,
-            tags: [["g", geohash]],
-            content: "Valid"
-        )
-        var signed = try event.sign(with: identity.schnorrSigningKey())
-        signed.id = "deadbeef"
-
-        viewModel.handleNostrEvent(signed)
-
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-
-        #expect(!viewModel.messages.contains { $0.content == "Tampered" })
-    }
-
-    @Test @MainActor
-    func subscribeGiftWrap_rejectsOversizedEmbeddedPacket() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-
-        let oversized = Data(repeating: 0x41, count: FileTransferLimits.maxFramedFileBytes + 1)
-        let content = "bitchat1:" + base64URLEncode(oversized)
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.subscribeGiftWrap(giftWrap, id: recipient)
-
-        try? await Task.sleep(nanoseconds: 100_000_000)
-        #expect(viewModel.privateChats.isEmpty)
-    }
-
-    @Test @MainActor
-    func switchLocationChannel_clearsNostrDedupCache() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-
-        viewModel.deduplicationService.recordNostrEvent("evt-cache")
-        #expect(viewModel.deduplicationService.hasProcessedNostrEvent("evt-cache"))
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-
-        #expect(!viewModel.deduplicationService.hasProcessedNostrEvent("evt-cache"))
-    }
-
-    @Test @MainActor
-    func handleNostrEvent_presenceTracksParticipantWithoutTimelineMessage() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let identity = try NostrIdentity.generate()
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-
-        let event = NostrEvent(
-            pubkey: identity.publicKeyHex,
-            createdAt: Date(),
-            kind: .geohashPresence,
-            tags: [["g", geohash]],
-            content: ""
-        )
-        let signed = try event.sign(with: identity.schnorrSigningKey())
-
-        viewModel.handleNostrEvent(signed)
-
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        #expect(viewModel.geohashParticipantCount(for: geohash) >= 1)
-        viewModel.publicMessagePipeline.flushIfNeeded()
-        #expect(viewModel.messages.isEmpty)
-    }
-
-    @Test @MainActor
-    func subscribeGiftWrap_deliveredAckUpdatesExistingMessage() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-        let convKey = PeerID(nostr_: sender.publicKeyHex)
-        let messageID = "geo-ack-delivered"
-
-        viewModel.seedPrivateChat([
-            BitchatMessage(
-                id: messageID,
-                sender: viewModel.nickname,
-                content: "Hello",
-                timestamp: Date(),
-                isRelay: false,
-                isPrivate: true,
-                recipientNickname: "Friend",
-                senderPeerID: viewModel.meshService.myPeerID,
-                deliveryStatus: .sent
-            )
-        ], for: convKey)
-
-        let content = try ackContent(type: .delivered, messageID: messageID, senderPeerID: PeerID(str: "0123456789abcdef"))
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.subscribeGiftWrap(giftWrap, id: recipient)
-
-        let didUpdate = await TestHelpers.waitUntil(
-            { isDelivered(status: deliveryStatus(in: viewModel, peerID: convKey, messageID: messageID)) },
-            timeout: 5.0
-        )
-        #expect(didUpdate)
-    }
-
-    @Test @MainActor
-    func subscribeGiftWrap_readAckUpdatesExistingMessage() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-        let convKey = PeerID(nostr_: sender.publicKeyHex)
-        let messageID = "geo-ack-read"
-
-        viewModel.seedPrivateChat([
-            BitchatMessage(
-                id: messageID,
-                sender: viewModel.nickname,
-                content: "Hello",
-                timestamp: Date(),
-                isRelay: false,
-                isPrivate: true,
-                recipientNickname: "Friend",
-                senderPeerID: viewModel.meshService.myPeerID,
-                deliveryStatus: .delivered(to: "Friend", at: Date())
-            )
-        ], for: convKey)
-
-        let content = try ackContent(type: .readReceipt, messageID: messageID, senderPeerID: PeerID(str: "0123456789abcdef"))
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.subscribeGiftWrap(giftWrap, id: recipient)
-
-        let didUpdate = await TestHelpers.waitUntil(
-            { isRead(status: deliveryStatus(in: viewModel, peerID: convKey, messageID: messageID)) },
-            timeout: 5.0
-        )
-        #expect(didUpdate)
-    }
-
-    @Test @MainActor
-    func handleGiftWrap_privateMessageStoresConversationAndMapping() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-        let messageID = "gift-private"
-        let convKey = PeerID(nostr_: sender.publicKeyHex)
-
-        let content = try privateMessageContent(
-            text: "Hello from gift wrap",
-            messageID: messageID,
-            senderPeerID: PeerID(str: "0123456789abcdef")
-        )
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.handleGiftWrap(giftWrap, id: recipient)
-
-        let didStore = await TestHelpers.waitUntil(
-            { viewModel.privateChats[convKey]?.first?.content == "Hello from gift wrap" },
-            timeout: 5.0
-        )
-        #expect(didStore)
-        #expect(viewModel.nostrKeyMapping[convKey] == sender.publicKeyHex)
-        #expect(viewModel.sentGeoDeliveryAcks.contains(messageID))
-    }
-
-    @Test @MainActor
-    func handleGiftWrap_blockedSenderSkipsMessageStorage() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-        let messageID = "gift-blocked"
-        let convKey = PeerID(nostr_: sender.publicKeyHex)
-
-        viewModel.identityManager.setNostrBlocked(sender.publicKeyHex, isBlocked: true)
-
-        let content = try privateMessageContent(
-            text: "Blocked",
-            messageID: messageID,
-            senderPeerID: PeerID(str: "0123456789abcdef")
-        )
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.handleGiftWrap(giftWrap, id: recipient)
-
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        #expect(viewModel.privateChats[convKey] == nil)
-        #expect(viewModel.sentGeoDeliveryAcks.contains(messageID))
-    }
-
-    @Test @MainActor
-    func handleGiftWrap_deliveredAckUpdatesExistingMessage() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let sender = try NostrIdentity.generate()
-        let recipient = try NostrIdentity.generate()
-        let convKey = PeerID(nostr_: sender.publicKeyHex)
-        let messageID = "gift-delivered"
-
-        viewModel.seedPrivateChat([
-            BitchatMessage(
-                id: messageID,
-                sender: viewModel.nickname,
-                content: "Hello",
-                timestamp: Date(),
-                isRelay: false,
-                isPrivate: true,
-                recipientNickname: "Friend",
-                senderPeerID: viewModel.meshService.myPeerID,
-                deliveryStatus: .sent
-            )
-        ], for: convKey)
-
-        let content = try ackContent(type: .delivered, messageID: messageID, senderPeerID: PeerID(str: "0123456789abcdef"))
-        let giftWrap = try NostrProtocol.createPrivateMessage(
-            content: content,
-            recipientPubkey: recipient.publicKeyHex,
-            senderIdentity: sender
-        )
-
-        viewModel.handleGiftWrap(giftWrap, id: recipient)
-
-        let didUpdate = await TestHelpers.waitUntil(
-            { isDelivered(status: deliveryStatus(in: viewModel, peerID: convKey, messageID: messageID)) },
-            timeout: 5.0
-        )
-        #expect(didUpdate)
-    }
-
-    @Test @MainActor
-    func findNoiseKey_matchesFavoriteStoredAsNpub() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let identity = try NostrIdentity.generate()
-        let noiseKey = Data((0..<32).map { UInt8(($0 + 80) & 0xFF) })
-
-        FavoritesPersistenceService.shared.addFavorite(
-            peerNoisePublicKey: noiseKey,
-            peerNostrPublicKey: identity.npub,
-            peerNickname: "Alice"
-        )
-        defer { FavoritesPersistenceService.shared.removeFavorite(peerNoisePublicKey: noiseKey) }
-
-        #expect(viewModel.findNoiseKey(for: identity.publicKeyHex) == noiseKey)
-    }
-
-    @Test @MainActor
-    func findNoiseKey_matchesFavoriteStoredAsHex() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let nostrHex = String(repeating: "ab", count: 32)
-        let noiseKey = Data((0..<32).map { UInt8(($0 + 112) & 0xFF) })
-
-        FavoritesPersistenceService.shared.addFavorite(
-            peerNoisePublicKey: noiseKey,
-            peerNostrPublicKey: nostrHex,
-            peerNickname: "Bob"
-        )
-        defer { FavoritesPersistenceService.shared.removeFavorite(peerNoisePublicKey: noiseKey) }
-
-        #expect(viewModel.findNoiseKey(for: nostrHex) == noiseKey)
-    }
-
-    /// An inbound Nostr [FAVORITED] marker must flip theyFavoritedUs and stay
-    /// out of the conversation transcript.
-    @Test @MainActor
-    func handlePrivateMessage_nostrFavoritedMarkerUpdatesRelationship() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let identity = try NostrIdentity.generate()
-        let noiseKey = Data((0..<32).map { UInt8(($0 + 144) & 0xFF) })
-
-        FavoritesPersistenceService.shared.addFavorite(
-            peerNoisePublicKey: noiseKey,
-            peerNostrPublicKey: identity.npub,
-            peerNickname: "Alice"
-        )
-        defer {
-            FavoritesPersistenceService.shared.updatePeerFavoritedUs(peerNoisePublicKey: noiseKey, favorited: false)
-            FavoritesPersistenceService.shared.removeFavorite(peerNoisePublicKey: noiseKey)
-        }
-
-        // The inbound pipeline resolves a known sender to their noise-key ID.
-        let convKey = PeerID(hexData: noiseKey)
-        let payloadData = try #require(
-            PrivateMessagePacket(messageID: "fav-e2e-1", content: "[FAVORITED]:\(identity.npub)").encode()
-        )
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-
-        viewModel.handlePrivateMessage(
-            payload,
-            senderPubkey: identity.publicKeyHex,
-            convKey: convKey,
-            id: identity,
-            messageTimestamp: Date()
-        )
-
-        let relationship = FavoritesPersistenceService.shared.getFavoriteStatus(for: noiseKey)
-        #expect(relationship?.theyFavoritedUs == true)
-        #expect(relationship?.isMutual == true)
-        #expect(relationship?.peerNostrPublicKey == identity.npub)
-        #expect(viewModel.privateChats[convKey, default: []].isEmpty)
-    }
-
-    @Test @MainActor
-    func geohashDMHelpers_exposeMappingAndDisplayName() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let nostrHex = String(repeating: "cd", count: 32)
-        let convKey = PeerID(nostr_: nostrHex)
-
-        viewModel.geoNicknames[nostrHex] = "Alice"
-        viewModel.startGeohashDM(withPubkeyHex: nostrHex)
-
-        #expect(viewModel.selectedPrivateChatPeer == convKey)
-        #expect(viewModel.fullNostrHex(forSenderPeerID: convKey) == nostrHex)
-        #expect(viewModel.geohashDisplayName(for: convKey).hasPrefix("Alice"))
-        #expect(viewModel.nostrPubkeyForDisplayName("Alice") == nostrHex)
-    }
-}
-
-// MARK: - Geohash Queue Tests
-
-struct ChatViewModelGeohashQueueTests {
-
-    @Test @MainActor
-    func addGeohashOnlySystemMessage_queuesUntilLocationChannel() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-
-        viewModel.addGeohashOnlySystemMessage("Queued system")
-        #expect(!viewModel.messages.contains { $0.content == "Queued system" })
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-
-        #expect(viewModel.messages.contains { $0.content == "Queued system" })
-    }
-}
-
-// MARK: - GeoDM Tests
-
-struct ChatViewModelGeoDMTests {
-
-    @Test @MainActor
-    func handlePrivateMessage_geohash_dedupsAndTracksAck() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let senderPubkey = "0000000000000000000000000000000000000000000000000000000000000001"
-        let messageID = "pm-1"
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        let identity = try viewModel.idBridge.deriveIdentity(forGeohash: geohash)
-
-        let convKey = PeerID(nostr_: senderPubkey)
-        let packet = PrivateMessagePacket(messageID: messageID, content: "Hello")
-        let payloadData = try #require(packet.encode(), "Failed to encode private message")
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-
-        viewModel.handlePrivateMessage(payload, senderPubkey: senderPubkey, convKey: convKey, id: identity, messageTimestamp: Date())
-        viewModel.handlePrivateMessage(payload, senderPubkey: senderPubkey, convKey: convKey, id: identity, messageTimestamp: Date())
-
-        #expect(viewModel.privateChats[convKey]?.count == 1)
-        #expect(viewModel.sentGeoDeliveryAcks.contains(messageID))
-    }
-
-    @Test @MainActor
-    func sendGeohashDM_requiresActiveLocationChannel() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let convKey = PeerID(nostr_: "0000000000000000000000000000000000000000000000000000000000000001")
-
-        viewModel.sendGeohashDM("hello", to: convKey)
-
-        // The failure is surfaced inside the geoDM thread, not on the public
-        // timeline (matches the sibling in-thread errors from #1415).
-        #expect(viewModel.messages.isEmpty)
-        #expect(viewModel.privateChats[convKey]?.count == 1)
-        #expect(viewModel.privateChats[convKey]?.last?.sender == "system")
-    }
-
-    @Test @MainActor
-    func sendGeohashDM_missingRecipientMapping_marksFailed() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let convKey = PeerID(nostr_: "0000000000000000000000000000000000000000000000000000000000000002")
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        viewModel.sendGeohashDM("hello", to: convKey)
-
-        #expect(viewModel.privateChats[convKey]?.count == 1)
-        #expect(isFailed(status: viewModel.privateChats[convKey]?.last?.deliveryStatus))
-    }
-
-    /// The blocked notice belongs in the DM thread the person is typing in,
-    /// not on the active location-channel timeline.
-    @Test @MainActor
-    func sendGeohashDM_blockedRecipient_marksFailedAndAddsSystemMessageInThread() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let recipientHex = "0000000000000000000000000000000000000000000000000000000000000003"
-        let convKey = PeerID(nostr_: recipientHex)
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        viewModel.registerNostrKeyMapping(recipientHex, for: convKey)
-        viewModel.identityManager.setNostrBlocked(recipientHex, isBlocked: true)
-
-        viewModel.sendGeohashDM("hello", to: convKey)
-
-        let thread = viewModel.privateChats[convKey] ?? []
-        #expect(thread.count == 2)
-        #expect(isFailed(status: thread.first?.deliveryStatus))
-        #expect(thread.last?.sender == "system")
-        #expect(!viewModel.messages.contains(where: { $0.sender == "system" }))
-    }
-
-    @Test @MainActor
-    func handlePrivateMessage_geohashViewingConversationRecordsReadReceipt() async throws {
-        let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
-        let senderPubkey = "0000000000000000000000000000000000000000000000000000000000000004"
-        let convKey = PeerID(nostr_: senderPubkey)
-        let messageID = "pm-viewing"
-
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
-        viewModel.selectedPrivateChatPeer = convKey
-
-        let identity = try viewModel.idBridge.deriveIdentity(forGeohash: geohash)
-        let packet = PrivateMessagePacket(messageID: messageID, content: "Hello")
-        let payloadData = try #require(packet.encode(), "Failed to encode private message")
-        let payload = NoisePayload(type: .privateMessage, data: payloadData)
-
-        viewModel.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: identity,
-            messageTimestamp: Date()
-        )
-
-        #expect(viewModel.sentGeoDeliveryAcks.contains(messageID))
-        #expect(viewModel.sentReadReceipts.contains(messageID))
-        #expect(!viewModel.unreadPrivateMessages.contains(convKey))
-    }
-}
-
 // MARK: - Single-Writer Intent Operation Tests
 
 /// Contracts for the owner-side intent ops that are the sole mutation paths
@@ -840,16 +195,6 @@ struct ChatViewModelGeoDMTests {
 /// `sentReadReceipts`, `sentGeoDeliveryAcks`, `isBatchingPublic`, the geo
 /// subscription IDs, and the selected private chat hand-off).
 struct ChatViewModelIntentOperationTests {
-
-    @Test @MainActor
-    func markGeoDeliveryAckSent_returnsFalseOnSecondCall() async {
-        let (viewModel, _) = makeTestableViewModel()
-
-        #expect(viewModel.markGeoDeliveryAckSent("geo-ack-1"))
-        #expect(!viewModel.markGeoDeliveryAckSent("geo-ack-1"))
-        #expect(viewModel.markGeoDeliveryAckSent("geo-ack-2"))
-        #expect(viewModel.sentGeoDeliveryAcks == ["geo-ack-1", "geo-ack-2"])
-    }
 
     @Test @MainActor
     func markReadReceiptSent_returnsFalseOnSecondCall() async {
@@ -874,37 +219,6 @@ struct ChatViewModelIntentOperationTests {
     }
 
     @Test @MainActor
-    func registerNostrKeyMapping_isVisibleToNostrCoordinatorLookups() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-        let convKey = PeerID(nostr_: hex)
-
-        // Registered through the owner intent op (as e.g. the private
-        // conversation flow does) and resolved through the Nostr coordinator,
-        // which reads the same backing dictionary via `ChatNostrContext`.
-        viewModel.registerNostrKeyMapping(hex, for: convKey)
-
-        #expect(viewModel.nostrKeyMapping[convKey] == hex)
-        #expect(viewModel.nostrCoordinator.fullNostrHex(forSenderPeerID: convKey) == hex)
-    }
-
-    @Test @MainActor
-    func removeNostrKeyMappings_dropsEveryMappingForThePubkeyCaseInsensitively() async {
-        let (viewModel, _) = makeTestableViewModel()
-        let hex = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
-        let otherHex = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
-        viewModel.registerNostrKeyMapping(hex.uppercased(), for: PeerID(nostr: hex))
-        viewModel.registerNostrKeyMapping(hex, for: PeerID(nostr_: hex))
-        viewModel.registerNostrKeyMapping(otherHex, for: PeerID(nostr_: otherHex))
-
-        viewModel.removeNostrKeyMappings(matchingPubkeyHexLowercased: hex)
-
-        #expect(viewModel.nostrKeyMapping[PeerID(nostr: hex)] == nil)
-        #expect(viewModel.nostrKeyMapping[PeerID(nostr_: hex)] == nil)
-        #expect(viewModel.nostrKeyMapping[PeerID(nostr_: otherHex)] == otherHex)
-    }
-
-    @Test @MainActor
     func setPublicBatching_publishesBatchingState() async {
         let (viewModel, _) = makeTestableViewModel()
 
@@ -913,30 +227,6 @@ struct ChatViewModelIntentOperationTests {
         #expect(viewModel.isBatchingPublic)
         viewModel.setPublicBatching(false)
         #expect(!viewModel.isBatchingPublic)
-    }
-
-    @Test @MainActor
-    func geoSubscriptionIntentOps_setClearAndDrainSubscriptions() async {
-        let (viewModel, _) = makeTestableViewModel()
-
-        viewModel.setGeoChatSubscriptionID("geo-u4pruy")
-        viewModel.setGeoDmSubscriptionID("geo-dm-u4pruy")
-        #expect(viewModel.geoSubscriptionID == "geo-u4pruy")
-        #expect(viewModel.geoDmSubscriptionID == "geo-dm-u4pruy")
-
-        viewModel.setGeoChatSubscriptionID(nil)
-        viewModel.setGeoDmSubscriptionID(nil)
-        #expect(viewModel.geoSubscriptionID == nil)
-        #expect(viewModel.geoDmSubscriptionID == nil)
-
-        viewModel.addGeoSamplingSub("geo-sample-aaaa", forGeohash: "aaaa")
-        viewModel.addGeoSamplingSub("geo-sample-bbbb", forGeohash: "bbbb")
-        viewModel.removeGeoSamplingSub("geo-sample-aaaa")
-        #expect(viewModel.geoSamplingSubs == ["geo-sample-bbbb": "bbbb"])
-
-        let cleared = viewModel.clearGeoSamplingSubs()
-        #expect(cleared == ["geo-sample-bbbb"])
-        #expect(viewModel.geoSamplingSubs.isEmpty)
     }
 
     @Test @MainActor
@@ -998,11 +288,12 @@ struct ChatViewModelMediaTransferTests {
     @Test @MainActor
     func sendVoiceNote_outsideAllowedContextDeletesTempFile() async throws {
         let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("voice-\(UUID().uuidString).m4a")
 
         try Data("voice".utf8).write(to: url)
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
+        // Media transfer isn't wired for group conversations, so selecting a
+        // group peer is the current "disallowed context" for media sends.
+        viewModel.selectedPrivateChatPeer = PeerID(groupID: Data(repeating: 0xAA, count: 16))
 
         viewModel.sendVoiceNote(at: url)
 
@@ -1013,10 +304,9 @@ struct ChatViewModelMediaTransferTests {
     @Test @MainActor
     func sendImage_outsideAllowedContextRunsCleanup() async {
         let (viewModel, _) = makeTestableViewModel()
-        let geohash = "u4pruydq"
         var cleanupCalled = false
 
-        viewModel.switchLocationChannel(to: .location(GeohashChannel(level: .city, geohash: geohash)))
+        viewModel.selectedPrivateChatPeer = PeerID(groupID: Data(repeating: 0xBB, count: 16))
         viewModel.sendImage(from: URL(fileURLWithPath: "/tmp/ignored.jpg")) {
             cleanupCalled = true
         }
@@ -1187,35 +477,6 @@ struct ChatViewModelMediaTransferTests {
     }
 }
 
-private func base64URLEncode(_ data: Data) -> String {
-    data.base64EncodedString()
-        .replacingOccurrences(of: "+", with: "-")
-        .replacingOccurrences(of: "/", with: "_")
-        .replacingOccurrences(of: "=", with: "")
-}
-
-private func ackContent(type: NoisePayloadType, messageID: String, senderPeerID: PeerID) throws -> String {
-    if let content = NostrEmbeddedBitChat.encodeAckForNostrNoRecipient(
-        type: type,
-        messageID: messageID,
-        senderPeerID: senderPeerID
-    ) {
-        return content
-    }
-    throw ChatViewModelExtensionsTestError.invalidAckContent
-}
-
-private func privateMessageContent(text: String, messageID: String, senderPeerID: PeerID) throws -> String {
-    if let content = NostrEmbeddedBitChat.encodePMForNostrNoRecipient(
-        content: text,
-        messageID: messageID,
-        senderPeerID: senderPeerID
-    ) {
-        return content
-    }
-    throw ChatViewModelExtensionsTestError.invalidPrivateMessageContent
-}
-
 @MainActor
 private func deliveryStatus(in viewModel: ChatViewModel, peerID: PeerID, messageID: String) -> DeliveryStatus? {
     viewModel.privateChats[peerID]?.first(where: { $0.id == messageID })?.deliveryStatus
@@ -1223,20 +484,6 @@ private func deliveryStatus(in viewModel: ChatViewModel, peerID: PeerID, message
 
 private func isFailed(status: DeliveryStatus?) -> Bool {
     if case .failed = status {
-        return true
-    }
-    return false
-}
-
-private func isDelivered(status: DeliveryStatus?) -> Bool {
-    if case .delivered = status {
-        return true
-    }
-    return false
-}
-
-private func isRead(status: DeliveryStatus?) -> Bool {
-    if case .read = status {
         return true
     }
     return false
@@ -1257,7 +504,6 @@ private func isPartiallyDelivered(status: DeliveryStatus?, reached: Int, total: 
 }
 
 private enum ChatViewModelExtensionsTestError: Error {
-    case invalidAckContent
     case invalidPrivateMessageContent
 }
 

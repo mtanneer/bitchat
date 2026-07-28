@@ -10,7 +10,7 @@ import Testing
 import Foundation
 import CoreBluetooth
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("Fragmentation Tests", .serialized)
 struct FragmentationTests {
@@ -176,11 +176,9 @@ extension FragmentationTests {
     private func makeBLEService() -> BLEService {
         let mockKeychain = MockKeychain()
         let mockIdentityManager = MockIdentityManager(mockKeychain)
-        let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
 
         return BLEService(
             keychain: mockKeychain,
-            idBridge: idBridge,
             identityManager: mockIdentityManager,
             initializeBluetoothManagers: false
         )

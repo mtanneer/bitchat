@@ -8,7 +8,7 @@
 
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 private final class VoiceRecorderTestSession: SessionApplying, @unchecked Sendable {
     private let lock = NSLock()

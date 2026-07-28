@@ -9,7 +9,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLESourceRouteFailureCacheTests {
     private let recipient = PeerID(str: "0102030405060708")

@@ -320,13 +320,11 @@ final class ConversationStore: ObservableObject {
     @Published private(set) var unreadConversations: Set<ConversationID> = []
 
     // MARK: Selection state
-    // The two UI selection axes: which public channel is active, and which
-    // private chat (if any) is open on top of it. `selectedConversationID`
-    // is derived: the open private chat wins, otherwise the active public
-    // channel's conversation. Mutate via `setActiveChannel` /
-    // `setSelectedPrivatePeer` only.
+    // The two UI selection axes: which public channel is active (mesh is the
+    // only one), and which private chat (if any) is open on top of it.
+    // `selectedConversationID` is derived: the open private chat wins,
+    // otherwise the mesh conversation. Mutate via `setSelectedPrivatePeer` only.
 
-    @Published private(set) var activeChannel: ChannelID = .mesh
     @Published private(set) var selectedPrivatePeerID: PeerID?
 
     private(set) var conversationsByID: [ConversationID: Conversation] = [:]
@@ -498,17 +496,8 @@ final class ConversationStore: ObservableObject {
         selectedConversationID = id
     }
 
-    /// Switches the active public channel. While no private chat is open
-    /// the selection follows the channel.
-    func setActiveChannel(_ channelID: ChannelID) {
-        if activeChannel != channelID {
-            activeChannel = channelID
-        }
-        refreshDerivedSelection()
-    }
-
     /// Opens a private chat (`nil` closes it, returning the selection to the
-    /// active public channel's conversation).
+    /// mesh conversation).
     func setSelectedPrivatePeer(_ peerID: PeerID?) {
         if selectedPrivatePeerID != peerID {
             selectedPrivatePeerID = peerID
@@ -520,7 +509,7 @@ final class ConversationStore: ObservableObject {
         if let peerID = selectedPrivatePeerID {
             select(.directPeer(peerID))
         } else {
-            select(ConversationID(channelID: activeChannel))
+            select(.mesh)
         }
     }
 

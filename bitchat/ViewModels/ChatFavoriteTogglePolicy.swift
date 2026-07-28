@@ -2,32 +2,28 @@ import Foundation
 
 struct ChatFavoriteStatusSnapshot: Equatable {
     let peerNickname: String
-    let peerNostrPublicKey: String?
     let isFavorite: Bool
     let theyFavoritedUs: Bool
 
     init(
         peerNickname: String,
-        peerNostrPublicKey: String?,
         isFavorite: Bool,
         theyFavoritedUs: Bool
     ) {
         self.peerNickname = peerNickname
-        self.peerNostrPublicKey = peerNostrPublicKey
         self.isFavorite = isFavorite
         self.theyFavoritedUs = theyFavoritedUs
     }
 
     init(_ relationship: FavoritesPersistenceService.FavoriteRelationship) {
         self.peerNickname = relationship.peerNickname
-        self.peerNostrPublicKey = relationship.peerNostrPublicKey
         self.isFavorite = relationship.isFavorite
         self.theyFavoritedUs = relationship.theyFavoritedUs
     }
 }
 
 enum ChatFavoritePersistenceAction: Equatable {
-    case add(nickname: String, nostrKey: String?)
+    case add(nickname: String)
     case remove
 }
 
@@ -44,8 +40,7 @@ struct ChatFavoriteTogglePlan: Equatable {
 enum ChatFavoriteTogglePolicy {
     static func plan(
         currentStatus: ChatFavoriteStatusSnapshot?,
-        fallbackNickname: String?,
-        bridgedNostrKey: String?
+        fallbackNickname: String?
     ) -> ChatFavoriteTogglePlan {
         let wasFavorite = currentStatus?.isFavorite ?? false
 
@@ -58,8 +53,7 @@ enum ChatFavoriteTogglePolicy {
 
         return ChatFavoriteTogglePlan(
             persistenceAction: .add(
-                nickname: currentStatus?.peerNickname ?? fallbackNickname ?? "Unknown",
-                nostrKey: currentStatus?.peerNostrPublicKey ?? bridgedNostrKey
+                nickname: currentStatus?.peerNickname ?? fallbackNickname ?? "Unknown"
             ),
             notification: currentStatus?.theyFavoritedUs == true ? .send(isFavorite: true) : .none
         )

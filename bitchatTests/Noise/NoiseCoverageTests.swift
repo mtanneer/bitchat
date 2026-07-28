@@ -3,7 +3,7 @@ import Foundation
 import Testing
 import BitFoundation
 
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("Noise Coverage Tests")
 struct NoiseCoverageTests {

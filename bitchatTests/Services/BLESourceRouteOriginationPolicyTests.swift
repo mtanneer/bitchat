@@ -9,7 +9,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLESourceRouteOriginationPolicyTests {
     private let localPeerIDData = Data(hexString: "0102030405060708")!

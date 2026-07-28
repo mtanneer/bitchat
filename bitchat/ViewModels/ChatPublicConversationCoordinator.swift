@@ -13,15 +13,10 @@ import UIKit
 /// minimal context it actually uses instead of holding an `unowned` back-ref
 /// to the whole `ChatViewModel`. This keeps the coordinator independently
 /// testable (see `ChatPublicConversationCoordinatorContextTests`) and makes
-/// its true dependencies explicit. The surface is intentionally large — it
-/// documents the coordinator's real coupling to the public timeline, the
-/// conversation stores, geohash participants, and the inbound public message
-/// pipeline.
+/// its true dependencies explicit.
 @MainActor
 protocol ChatPublicConversationContext: AnyObject {
     // MARK: Channel state
-    var activeChannel: ChannelID { get }
-    var currentGeohash: String? { get }
     var nickname: String { get }
     var myPeerID: PeerID { get }
     /// Publishes the public-timeline batching state (UI animation suppression).
@@ -40,12 +35,8 @@ protocol ChatPublicConversationContext: AnyObject {
     /// Removes a message by ID from whichever public conversation contains it.
     @discardableResult
     func removePublicMessage(withID messageID: String) -> BitchatMessage?
-    /// Removes every matching message from a geohash conversation (block purge).
-    func removePublicMessages(fromGeohash geohash: String, where predicate: (BitchatMessage) -> Bool)
     /// Empties a public conversation's timeline (`/clear`).
     func clearPublicConversation(_ conversationID: ConversationID)
-    /// Queues a system message for the next geohash channel visit.
-    func queueGeohashSystemMessage(_ content: String)
 
     // MARK: Private chats (block cleanup & message removal)
     /// Removes the peer's chat entirely, including unread state
@@ -57,21 +48,6 @@ protocol ChatPublicConversationContext: AnyObject {
     func removePrivateMessage(withID messageID: String) -> BitchatMessage?
     func cleanupLocalFile(forMessage message: BitchatMessage)
 
-    // MARK: Geohash participants & presence
-    var geoNicknames: [String: String] { get }
-    var isTeleported: Bool { get }
-    var nostrKeyMapping: [PeerID: String] { get }
-    /// Drops every key mapping that resolves to the given (lowercased) Nostr pubkey.
-    func removeNostrKeyMappings(matchingPubkeyHexLowercased hex: String)
-    func visibleGeoPeople() -> [GeoPerson]
-    func geoParticipantCount(for geohash: String) -> Int
-    func removeGeoParticipant(pubkeyHex: String)
-
-    // MARK: Nostr identity & blocking (shared with the other contexts)
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity
-    func isNostrBlocked(pubkeyHexLowercased: String) -> Bool
-    func setNostrBlocked(_ pubkeyHexLowercased: String, isBlocked: Bool)
-
     // MARK: Mesh transport
     func meshPeerNicknames() -> [PeerID: String]
     func sendMeshMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date)
@@ -79,9 +55,7 @@ protocol ChatPublicConversationContext: AnyObject {
     // MARK: Inbound public message processing
     func processActionMessage(_ message: BitchatMessage) -> BitchatMessage
     func isMessageBlocked(_ message: BitchatMessage) -> Bool
-    /// `powBits` is the validated NIP-13 difficulty of the source Nostr event
-    /// (0 for mesh messages); sufficient PoW relaxes the per-sender bucket.
-    func allowPublicMessage(senderKey: String, contentKey: String, powBits: Int) -> Bool
+    func allowPublicMessage(senderKey: String, contentKey: String) -> Bool
     /// Buffers a visible-channel message for the batched (~80 ms) pipeline
     /// flush, which commits it to `conversationID` in the store.
     func enqueuePublicMessage(_ message: BitchatMessage, to conversationID: ConversationID)
@@ -100,32 +74,14 @@ protocol ChatPublicConversationContext: AnyObject {
 }
 
 extension ChatViewModel: ChatPublicConversationContext {
-    // `unreadPrivateMessages`, `nostrKeyMapping`,
-    // `nickname`, `activeChannel`, `currentGeohash`, `geoNicknames`,
-    // `myPeerID`, `isTeleported`, `notifyUIChanged()`,
-    // `geoParticipantCount(for:)`, `isNostrBlocked(pubkeyHexLowercased:)`,
-    // `deriveNostrIdentity(forGeohash:)`, the public conversation store
-    // intents (`appendPublicMessage(_:to:)`,
+    // `nickname`, `myPeerID`, `notifyUIChanged()`, the public conversation
+    // store intents (`appendPublicMessage(_:to:)`,
     // `publicConversationContainsMessage(withID:in:)`,
-    // `removePublicMessage(withID:)`,
-    // `removePublicMessages(fromGeohash:where:)`,
-    // `clearPublicConversation(_:)`, and `queueGeohashSystemMessage(_:)`)
-    // are shared requirements with `ChatDeliveryContext` /
-    // `ChatPrivateConversationContext` / `ChatNostrContext` or satisfied by
+    // `removePublicMessage(withID:)`, `clearPublicConversation(_:)`) are
+    // shared requirements with `ChatDeliveryContext` /
+    // `ChatPrivateConversationContext` or satisfied by
     // existing `ChatViewModel` members. The members below flatten nested
     // service accesses into intent-named calls.
-
-    func visibleGeoPeople() -> [GeoPerson] {
-        participantTracker.getVisiblePeople()
-    }
-
-    func removeGeoParticipant(pubkeyHex: String) {
-        participantTracker.removeParticipant(pubkeyHex: pubkeyHex)
-    }
-
-    func setNostrBlocked(_ pubkeyHexLowercased: String, isBlocked: Bool) {
-        identityManager.setNostrBlocked(pubkeyHexLowercased, isBlocked: isBlocked)
-    }
 
     func meshPeerNicknames() -> [PeerID: String] {
         meshService.getPeerNicknames()
@@ -135,8 +91,8 @@ extension ChatViewModel: ChatPublicConversationContext {
         meshService.sendMessage(content, mentions: mentions, messageID: messageID, timestamp: timestamp)
     }
 
-    func allowPublicMessage(senderKey: String, contentKey: String, powBits: Int) -> Bool {
-        publicRateLimiter.allow(senderKey: senderKey, contentKey: contentKey, powBits: powBits)
+    func allowPublicMessage(senderKey: String, contentKey: String) -> Bool {
+        publicRateLimiter.allow(senderKey: senderKey, contentKey: contentKey)
     }
 
     func enqueuePublicMessage(_ message: BitchatMessage, to conversationID: ConversationID) {
@@ -172,103 +128,8 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
         self.context = context
     }
 
-    func visibleGeohashPeople() -> [GeoPerson] {
-        context.visibleGeoPeople()
-    }
-
-    func getVisibleGeoParticipants() -> [CommandGeoParticipant] {
-        visibleGeohashPeople().map { CommandGeoParticipant(id: $0.id, displayName: $0.displayName) }
-    }
-
-    func geohashParticipantCount(for geohash: String) -> Int {
-        context.geoParticipantCount(for: geohash)
-    }
-
-    func displayNameForPubkey(_ pubkeyHex: String) -> String {
-        displayNameForNostrPubkey(pubkeyHex)
-    }
-
-    func isBlocked(_ pubkeyHexLowercased: String) -> Bool {
-        context.isNostrBlocked(pubkeyHexLowercased: pubkeyHexLowercased)
-    }
-
-    func isGeohashUserBlocked(pubkeyHexLowercased: String) -> Bool {
-        context.isNostrBlocked(pubkeyHexLowercased: pubkeyHexLowercased)
-    }
-
-    func blockGeohashUser(pubkeyHexLowercased: String, displayName: String) {
-        let hex = pubkeyHexLowercased.lowercased()
-        context.setNostrBlocked(hex, isBlocked: true)
-        context.removeGeoParticipant(pubkeyHex: hex)
-
-        if let gh = context.currentGeohash {
-            let predicate: (BitchatMessage) -> Bool = { [unowned context] message in
-                guard let senderPeerID = message.senderPeerID,
-                      senderPeerID.isGeoDM || senderPeerID.isGeoChat else {
-                    return false
-                }
-                if let full = context.nostrKeyMapping[senderPeerID]?.lowercased() {
-                    return full == hex
-                }
-                return false
-            }
-            context.removePublicMessages(fromGeohash: gh, where: predicate)
-        }
-
-        // The store intent no-ops when no such chat exists.
-        context.removePrivateChat(PeerID(nostr_: hex))
-
-        context.removeNostrKeyMappings(matchingPubkeyHexLowercased: hex)
-
-        addSystemMessage(
-            String(
-                format: String(
-                    localized: "system.geohash.blocked",
-                    comment: "System message shown when a user is blocked in geohash chats"
-                ),
-                locale: .current,
-                displayName
-            )
-        )
-    }
-
-    func unblockGeohashUser(pubkeyHexLowercased: String, displayName: String) {
-        context.setNostrBlocked(pubkeyHexLowercased, isBlocked: false)
-        addSystemMessage(
-            String(
-                format: String(
-                    localized: "system.geohash.unblocked",
-                    comment: "System message shown when a user is unblocked in geohash chats"
-                ),
-                locale: .current,
-                displayName
-            )
-        )
-    }
-
-    func displayNameForNostrPubkey(_ pubkeyHex: String) -> String {
-        let suffix = String(pubkeyHex.suffix(4))
-        if let geohash = context.currentGeohash,
-           let myGeoIdentity = try? context.deriveNostrIdentity(forGeohash: geohash),
-           myGeoIdentity.publicKeyHex.lowercased() == pubkeyHex.lowercased() {
-            return context.nickname + "#" + suffix
-        }
-        if let nick = context.geoNicknames[pubkeyHex.lowercased()], !nick.isEmpty {
-            return nick + "#" + suffix
-        }
-        return "anon#\(suffix)"
-    }
-
     func currentPublicSender() -> (name: String, peerID: PeerID) {
-        var displaySender = context.nickname
-        var senderPeerID = context.myPeerID
-        if case .location(let channel) = context.activeChannel,
-           let identity = try? context.deriveNostrIdentity(forGeohash: channel.geohash) {
-            let suffix = String(identity.publicKeyHex.suffix(4))
-            displaySender = context.nickname + "#" + suffix
-            senderPeerID = PeerID(nostr: identity.publicKeyHex)
-        }
-        return (displaySender, senderPeerID)
+        (context.nickname, context.myPeerID)
     }
 
     func removeMessage(withID messageID: String, cleanupFile: Bool = false) {
@@ -286,16 +147,14 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
     }
 
     func clearCurrentPublicTimeline() {
-        context.clearPublicConversation(ConversationID(channelID: context.activeChannel))
+        context.clearPublicConversation(.mesh)
 
         // Clearing the mesh timeline also dismisses its archived echoes for
         // good: the watermark stops the next launch from re-seeding them
         // (the archive itself keeps carrying the messages for peers), and
         // the dedup keys go so a cleared message arriving live shows again.
-        if case .mesh = context.activeChannel {
-            MeshEchoSettings.clearedThrough = Date()
-            archivedEchoKeys.removeAll()
-        }
+        MeshEchoSettings.clearedThrough = Date()
+        archivedEchoKeys.removeAll()
 
         // The SPM test process shares the real Application Support tree, so this
         // detached deletion can land mid-test under parallel scheduling and flake
@@ -345,17 +204,11 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
             timestamp: timestamp,
             isRelay: false
         )
-        context.appendPublicMessage(systemMessage, to: ConversationID(channelID: context.activeChannel))
+        context.appendPublicMessage(systemMessage, to: .mesh)
     }
 
     func addMeshOnlySystemMessage(_ content: String) {
-        let systemMessage = BitchatMessage(
-            sender: "system",
-            content: content,
-            timestamp: Date(),
-            isRelay: false
-        )
-        context.appendPublicMessage(systemMessage, to: .mesh)
+        addSystemMessage(content)
     }
 
     func addPublicSystemMessage(_ content: String) {
@@ -365,45 +218,12 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
             timestamp: Date(),
             isRelay: false
         )
-        context.appendPublicMessage(systemMessage, to: ConversationID(channelID: context.activeChannel))
+        context.appendPublicMessage(systemMessage, to: .mesh)
         let contentKey = context.normalizedContentKey(systemMessage.content)
         context.recordContentKey(contentKey, timestamp: systemMessage.timestamp)
     }
 
-    func addGeohashOnlySystemMessage(_ content: String) {
-        if case .location = context.activeChannel {
-            addPublicSystemMessage(content)
-        } else {
-            context.queueGeohashSystemMessage(content)
-        }
-    }
-
     func sendPublicRaw(_ content: String) {
-        if case .location(let channel) = context.activeChannel {
-            Task { @MainActor [weak context] in
-                guard let context else { return }
-                do {
-                    let identity = try context.deriveNostrIdentity(forGeohash: channel.geohash)
-                    let event = try await NostrProtocol.createMinedEphemeralGeohashEvent(
-                        content: content,
-                        geohash: channel.geohash,
-                        senderIdentity: identity,
-                        nickname: context.nickname,
-                        teleported: context.isTeleported
-                    )
-                    let targetRelays = GeoRelayDirectory.shared.closestRelays(toGeohash: channel.geohash, count: 5)
-                    if targetRelays.isEmpty {
-                        NostrRelayManager.shared.sendEvent(event)
-                    } else {
-                        NostrRelayManager.shared.sendEvent(event, to: targetRelays)
-                    }
-                } catch {
-                    SecureLogger.error("❌ Failed to send geohash raw message: \(error)", category: .session)
-                }
-            }
-            return
-        }
-
         context.sendMeshMessage(
             content,
             mentions: [],
@@ -412,10 +232,6 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
         )
     }
 
-    /// - Parameter powBits: validated NIP-13 difficulty of the source Nostr
-    ///   event (0 for mesh messages). Sufficient PoW relaxes the per-sender
-    ///   rate limit; low/no-PoW events keep the strict limits so old clients
-    ///   still get through at normal rates.
     /// Identity keys of the archived echoes seeded into the mesh timeline at
     /// launch. Re-synced copies of others' messages now arrive with the same
     /// derived stable ID (`MeshMessageIdentity`), so the store's insert-by-ID
@@ -434,17 +250,16 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
         return "\(senderPeerID?.id ?? "")|\(ms)|\(content)"
     }
 
-    func handlePublicMessage(_ message: BitchatMessage, powBits: Int = 0) {
+    func handlePublicMessage(_ message: BitchatMessage) {
         let finalMessage = context.processActionMessage(message)
         if context.isMessageBlocked(finalMessage) { return }
 
-        let isGeo = finalMessage.senderPeerID?.isGeoChat == true
         let isSystem = finalMessage.sender == "system"
         let shouldRateLimit = !isSystem || finalMessage.senderPeerID != nil
         if shouldRateLimit {
             let senderKey = normalizedSenderKey(for: finalMessage)
             let contentKey = context.normalizedContentKey(finalMessage.content)
-            if !context.allowPublicMessage(senderKey: senderKey, contentKey: contentKey, powBits: powBits) {
+            if !context.allowPublicMessage(senderKey: senderKey, contentKey: contentKey) {
                 return
             }
         }
@@ -455,23 +270,11 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
         // outright instead of lingering invisibly in a backing buffer.
         guard !finalMessage.content.trimmed.isEmpty else { return }
 
-        // Resolve the destination conversation. System messages surface on
-        // the active channel (matching their old visible-only routing); geo
-        // messages require a current geohash, mesh messages always land in
-        // the mesh conversation.
-        let destination: ConversationID?
-        if isSystem {
-            destination = ConversationID(channelID: context.activeChannel)
-        } else if isGeo {
-            destination = context.currentGeohash.map { .geohash($0.lowercased()) }
-        } else {
-            destination = .mesh
-        }
-        guard let destination else { return }
+        let destination = ConversationID.mesh
 
         // A live copy of a message already rendered as an archived echo
         // (e.g. re-served by a peer's gossip sync) would duplicate the row.
-        if destination == .mesh, !isSystem {
+        if !isSystem {
             let key = Self.archivedEchoKey(
                 senderPeerID: finalMessage.senderPeerID,
                 timestamp: finalMessage.timestamp,
@@ -480,24 +283,11 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
             if archivedEchoKeys.contains(key) { return }
         }
 
-        let channelMatches: Bool = {
-            switch context.activeChannel {
-            case .mesh: return !isGeo || isSystem
-            case .location: return isGeo || isSystem
-            }
-        }()
-
-        if channelMatches {
-            // Visible-channel arrivals are batched: the pipeline's ~80 ms
-            // flush commits them to the store (which dedups by ID), keeping
-            // the deliberate UI flush cadence.
-            guard !context.publicConversationContainsMessage(withID: finalMessage.id, in: destination) else { return }
-            context.enqueuePublicMessage(finalMessage, to: destination)
-        } else {
-            // Background-channel arrivals have no rendering observers to
-            // batch for; they land in the store immediately.
-            context.appendPublicMessage(finalMessage, to: destination)
-        }
+        // Visible-channel arrivals are batched: the pipeline's ~80 ms
+        // flush commits them to the store (which dedups by ID), keeping
+        // the deliberate UI flush cadence.
+        guard !context.publicConversationContainsMessage(withID: finalMessage.id, in: destination) else { return }
+        context.enqueuePublicMessage(finalMessage, to: destination)
     }
 
     func checkForMentions(_ message: BitchatMessage) {
@@ -520,15 +310,7 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
         #if os(iOS)
         guard UIApplication.shared.applicationState == .active else { return }
 
-        var tokens: [String] = [context.nickname]
-        switch context.activeChannel {
-        case .location(let channel):
-            if let identity = try? context.deriveNostrIdentity(forGeohash: channel.geohash) {
-                tokens.append(context.nickname + "#" + String(identity.publicKeyHex.suffix(4)))
-            }
-        case .mesh:
-            break
-        }
+        let tokens: [String] = [context.nickname]
 
         let hugsMe = tokens.contains { message.content.contains("hugs \($0)") } || message.content.contains("hugs you")
         let slapsMe = tokens.contains { message.content.contains("slaps \($0) around") } || message.content.contains("slaps you around")
@@ -582,11 +364,8 @@ final class ChatPublicConversationCoordinator: PublicMessagePipelineDelegate {
 private extension ChatPublicConversationCoordinator {
     func normalizedSenderKey(for message: BitchatMessage) -> String {
         if let senderPeerID = message.senderPeerID {
-            if senderPeerID.isGeoChat || senderPeerID.isGeoDM {
-                let full = (context.nostrKeyMapping[senderPeerID] ?? senderPeerID.bare).lowercased()
-                return "nostr:" + full
-            } else if senderPeerID.id.count == 16,
-                      let full = context.cachedStablePeerID(for: senderPeerID)?.id.lowercased() {
+            if senderPeerID.id.count == 16,
+               let full = context.cachedStablePeerID(for: senderPeerID)?.id.lowercased() {
                 return "noise:" + full
             } else {
                 return "mesh:" + senderPeerID.id.lowercased()

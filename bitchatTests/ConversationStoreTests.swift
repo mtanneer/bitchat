@@ -15,7 +15,7 @@ import BitFoundation
 import Combine
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 private func makeMessage(
@@ -786,7 +786,7 @@ struct ConversationStoreTests {
         store.removeMessage(withID: "dm-gone", from: stable)
 
         store.markUnread(stable)
-        store.setActiveChannel(.mesh)
+        store.select(.mesh)
         return store
     }
 

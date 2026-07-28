@@ -2,33 +2,18 @@ import BitFoundation
 import Combine
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
-private func makeArchitectureViewModel(
-    locationManager: LocationChannelManager? = nil
-) -> ChatViewModel {
+private func makeArchitectureViewModel() -> ChatViewModel {
     let keychain = MockKeychain()
-    let keychainHelper = MockKeychainHelper()
-    let idBridge = NostrIdentityBridge(keychain: keychainHelper)
     let identityManager = MockIdentityManager(keychain)
-    let locationManager = locationManager ?? makeArchitectureLocationManager()
 
     return ChatViewModel(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
-        transport: MockTransport(),
-        locationManager: locationManager
+        transport: MockTransport()
     )
-}
-
-@MainActor
-private func makeArchitectureLocationManager() -> LocationChannelManager {
-    let suiteName = "AppArchitectureTests.\(UUID().uuidString)"
-    let storage = UserDefaults(suiteName: suiteName) ?? .standard
-    storage.removePersistentDomain(forName: suiteName)
-    return LocationChannelManager(storage: storage)
 }
 
 private func makeArchitectureSnapshot(
@@ -122,69 +107,6 @@ struct AppArchitectureTests {
         #expect(store.stablePeerID(forShortID: shortPeerID) == nil)
     }
 
-    @Test("LocationPresenceStore normalizes and resets geohash presence state")
-    @MainActor
-    func locationPresenceStoreNormalizesPresenceState() {
-        let store = LocationPresenceStore()
-
-        store.setCurrentGeohash("U4PRUY")
-        store.replaceGeoNicknames([
-            "ABCDEF": "alice",
-            "123456": "bob"
-        ])
-        store.markTeleported("ABCDEF")
-        store.replaceTeleportedGeo(Set(["FEDCBA", "123456"]))
-
-        #expect(store.currentGeohash == "u4pruy")
-        #expect(store.geoNicknames["abcdef"] == "alice")
-        #expect(store.geoNicknames["123456"] == "bob")
-        #expect(store.teleportedGeo == Set(["fedcba", "123456"]))
-
-        store.reset()
-
-        #expect(store.currentGeohash == nil)
-        #expect(store.geoNicknames.isEmpty)
-        #expect(store.teleportedGeo.isEmpty)
-    }
-
-    @Test("LocationPresenceStore bounds and prunes teleported geohash participants")
-    @MainActor
-    func locationPresenceStoreBoundsTeleportedParticipants() {
-        let store = LocationPresenceStore(teleportedGeoCapacity: 2)
-
-        store.setCurrentGeohash("u4pruy")
-        store.markTeleported("AAAAAA")
-        store.markTeleported("BBBBBB")
-        store.markTeleported("CCCCCC")
-
-        #expect(store.teleportedGeo == Set(["bbbbbb", "cccccc"]))
-
-        store.retainTeleportedGeo(keeping: Set(["CCCCCC"]))
-        #expect(store.teleportedGeo == Set(["cccccc"]))
-
-        store.setCurrentGeohash("u4pruz")
-        #expect(store.teleportedGeo.isEmpty)
-    }
-
-    @Test("LocationPresenceStore bounds geohash nicknames and clears on channel switch")
-    @MainActor
-    func locationPresenceStoreBoundsGeoNicknames() {
-        let store = LocationPresenceStore(geoNicknameCapacity: 2)
-
-        store.setCurrentGeohash("u4pruy")
-        store.setNickname("alice", for: "AAAAAA")
-        store.setNickname("bob", for: "BBBBBB")
-        store.setNickname("carol", for: "CCCCCC")
-
-        #expect(store.geoNicknames == ["bbbbbb": "bob", "cccccc": "carol"])
-
-        store.retainGeoNicknames(keeping: Set(["CCCCCC"]))
-        #expect(store.geoNicknames == ["cccccc": "carol"])
-
-        store.setCurrentGeohash("u4pruz")
-        #expect(store.geoNicknames.isEmpty)
-    }
-
     @Test("PeerHandle equality and hashing use the canonical identity only")
     func peerHandleEqualityUsesCanonicalIdentity() {
         let first = PeerHandle(id: "noise:abc123", routingPeerID: PeerID(str: "peer-a"))
@@ -230,27 +152,20 @@ struct AppArchitectureTests {
         #expect(!store.conversation(for: .directPeer(peerID)).isUnread)
     }
 
-    @Test("ConversationStore derives the selected conversation from channel and private peer")
+    @Test("ConversationStore derives the selected conversation from mesh and private peer")
     @MainActor
     func conversationStoreTracksSelectedConversationContext() {
         let store = ConversationStore()
         let peerID = PeerID(str: "0011223344556677")
-        let geohashChannel = ChannelID.location(GeohashChannel(level: .city, geohash: "9q8yy"))
 
-        store.setActiveChannel(geohashChannel)
         store.setSelectedPrivatePeer(peerID)
 
-        #expect(store.activeChannel == geohashChannel)
         #expect(store.selectedPrivatePeerID == peerID)
         // The open private chat wins the derived selection.
         #expect(store.selectedConversationID == ConversationID.directPeer(peerID))
 
         store.setSelectedPrivatePeer(nil)
-        // Selection falls back to the active public channel.
-        #expect(store.selectedConversationID == ConversationID(channelID: geohashChannel))
-
-        store.setActiveChannel(.mesh)
-        #expect(store.activeChannel == ChannelID.mesh)
+        // Selection falls back to the mesh conversation once no private peer is open.
         #expect(store.selectedPrivatePeerID == nil)
         #expect(store.selectedConversationID == ConversationID.mesh)
     }
@@ -381,7 +296,6 @@ struct AppArchitectureTests {
     @MainActor
     func publicChatModelIsolatesBackgroundConversations() {
         let store = ConversationStore()
-        store.setActiveChannel(.mesh)
         let model = PublicChatModel(conversations: store)
 
         var emissions = 0
@@ -393,21 +307,14 @@ struct AppArchitectureTests {
         #expect(afterActiveAppend >= 1)
         #expect(model.messages.map(\.id) == ["mesh-1"])
 
-        // Appends to a background geohash channel and to a private chat do
-        // not invalidate the observer of the active conversation.
-        store.append(makeArchitectureMessage(id: "geo-1"), to: .geohash("u4pruyd"))
+        // Appends to a private chat do not invalidate the observer of the
+        // mesh conversation.
         store.append(
             makeArchitectureMessage(id: "dm-1", isPrivate: true),
             to: .directPeer(PeerID(str: "peer-1"))
         )
         #expect(emissions == afterActiveAppend)
         #expect(model.messages.map(\.id) == ["mesh-1"])
-
-        // Switching the channel retargets the observation.
-        store.setActiveChannel(.location(GeohashChannel(level: .neighborhood, geohash: "u4pruyd")))
-        #expect(model.messages.map(\.id) == ["geo-1"])
-        store.append(makeArchitectureMessage(id: "geo-2", timestamp: 1), to: .geohash("u4pruyd"))
-        #expect(model.messages.map(\.id) == ["geo-1", "geo-2"])
     }
 
     @Test("AppChromeModel mirrors nickname and unread state through focused models")
@@ -466,11 +373,9 @@ struct AppArchitectureTests {
             Issue.record("Expected ChatViewModel meshService to be a MockTransport in architecture tests")
             return
         }
-        let locationChannelsModel = LocationChannelsModel(manager: makeArchitectureLocationManager())
         let conversationModel = PrivateConversationModel(
             chatViewModel: viewModel,
-            conversations: viewModel.conversations,
-            locationChannelsModel: locationChannelsModel
+            conversations: viewModel.conversations
         )
 
         let noiseKey = Data((0..<32).map(UInt8.init))
@@ -510,55 +415,35 @@ struct AppArchitectureTests {
     @Test("ConversationUIModel mirrors composer state and forwards sends")
     @MainActor
     func conversationUIModelMirrorsComposerStateAndForwardsSends() async {
-        let locationManager = makeArchitectureLocationManager()
-        let viewModel = makeArchitectureViewModel(locationManager: locationManager)
+        let viewModel = makeArchitectureViewModel()
         guard let transport = viewModel.meshService as? MockTransport else {
             Issue.record("Expected ChatViewModel meshService to be a MockTransport in architecture tests")
             return
         }
 
-        locationManager.select(.mesh)
-        let locationChannelsModel = LocationChannelsModel(manager: locationManager)
         let privateConversationModel = PrivateConversationModel(
             chatViewModel: viewModel,
-            conversations: viewModel.conversations,
-            locationChannelsModel: locationChannelsModel
+            conversations: viewModel.conversations
         )
         let uiModel = ConversationUIModel(
             chatViewModel: viewModel,
             privateConversationModel: privateConversationModel,
             conversations: viewModel.conversations
         )
-        let geohashChannel = ChannelID.location(GeohashChannel(level: .city, geohash: "9q8yy"))
-        defer {
-            locationManager.select(.mesh)
-        }
         viewModel.nickname = "builder"
         viewModel.autocompleteSuggestions = ["alice"]
         viewModel.showAutocomplete = true
-        locationChannelsModel.select(geohashChannel)
 
         await waitUntil {
-            viewModel.activeChannel == geohashChannel &&
             uiModel.currentNickname == "builder" &&
             uiModel.showAutocomplete &&
             uiModel.autocompleteSuggestions == ["alice"] &&
-            !uiModel.canSendMediaInCurrentContext
-        }
-
-        #expect(viewModel.activeChannel == geohashChannel)
-        #expect(uiModel.currentNickname == "builder")
-        #expect(uiModel.showAutocomplete)
-        #expect(uiModel.autocompleteSuggestions == ["alice"])
-        #expect(!uiModel.canSendMediaInCurrentContext)
-
-        locationChannelsModel.select(ChannelID.mesh)
-        await waitUntil {
-            viewModel.activeChannel == ChannelID.mesh &&
             uiModel.canSendMediaInCurrentContext
         }
 
-        #expect(viewModel.activeChannel == ChannelID.mesh)
+        #expect(uiModel.currentNickname == "builder")
+        #expect(uiModel.showAutocomplete)
+        #expect(uiModel.autocompleteSuggestions == ["alice"])
         #expect(uiModel.canSendMediaInCurrentContext)
 
         uiModel.sendMessage("hello mesh")
@@ -581,11 +466,9 @@ struct AppArchitectureTests {
 
         let peerID = PeerID(str: "0011223344556677")
         let fingerprint = "verified-fingerprint"
-        let locationChannelsModel = LocationChannelsModel(manager: makeArchitectureLocationManager())
         let privateConversationModel = PrivateConversationModel(
             chatViewModel: viewModel,
-            conversations: viewModel.conversations,
-            locationChannelsModel: locationChannelsModel
+            conversations: viewModel.conversations
         )
         let verificationModel = VerificationModel(
             chatViewModel: viewModel,
@@ -635,8 +518,7 @@ struct AppArchitectureTests {
         let viewModel = makeArchitectureViewModel()
         var privateConversationModel: PrivateConversationModel? = PrivateConversationModel(
             chatViewModel: viewModel,
-            conversations: viewModel.conversations,
-            locationChannelsModel: LocationChannelsModel(manager: makeArchitectureLocationManager())
+            conversations: viewModel.conversations
         )
         let verificationModel = VerificationModel(
             chatViewModel: viewModel,
@@ -668,7 +550,7 @@ struct AppArchitectureTests {
         #expect(refreshed)
     }
 
-    @Test("PeerListModel publishes mesh and geohash directory state")
+    @Test("PeerListModel publishes mesh directory state")
     @MainActor
     func peerListModelPublishesDirectoryState() async {
         let viewModel = makeArchitectureViewModel()
@@ -679,10 +561,6 @@ struct AppArchitectureTests {
 
         let myPeerID = PeerID(str: "me-peer")
         let otherPeerID = PeerID(str: "0011223344556677")
-        let geohash = "9q8yy"
-        let remoteGeoID = String(repeating: "b", count: 64)
-        let locationManager = makeArchitectureLocationManager()
-        let locationChannelsModel = LocationChannelsModel(manager: locationManager)
         let otherNoiseKey = Data((0..<32).map(UInt8.init))
         let verifiedFingerprint = otherNoiseKey.sha256Fingerprint()
 
@@ -708,32 +586,15 @@ struct AppArchitectureTests {
             )
         ])
 
-        locationManager.select(.location(GeohashChannel(level: .city, geohash: geohash)))
-        await waitUntil {
-            if case .location(let channel) = locationManager.selectedChannel {
-                return channel.geohash == geohash && !viewModel.allPeers.isEmpty
-            }
-            return false
-        }
-
-        viewModel.participantTracker.setActiveGeohash(geohash)
-        viewModel.teleportedGeo = Set([remoteGeoID])
-        viewModel.participantTracker.recordParticipant(pubkeyHex: remoteGeoID, geohash: geohash)
-        if let myGeoID = try? viewModel.idBridge.deriveIdentity(forGeohash: geohash).publicKeyHex.lowercased() {
-            viewModel.participantTracker.recordParticipant(pubkeyHex: myGeoID, geohash: geohash)
-        }
-
         let peerListModel = PeerListModel(
             chatViewModel: viewModel,
-            conversations: viewModel.conversations,
-            locationChannelsModel: locationChannelsModel
+            conversations: viewModel.conversations
         )
 
         await waitUntil {
             peerListModel.reachableMeshPeerCount == 1 &&
             peerListModel.connectedMeshPeerCount == 0 &&
-            peerListModel.meshRows.contains(where: { $0.peerID == otherPeerID && $0.hasUnread }) &&
-            peerListModel.geohashPeople.contains(where: { $0.id == remoteGeoID && $0.isTeleported })
+            peerListModel.meshRows.contains(where: { $0.peerID == otherPeerID && $0.hasUnread })
         }
 
         let meshRow = peerListModel.meshRows.first(where: { $0.peerID == otherPeerID })
@@ -742,19 +603,5 @@ struct AppArchitectureTests {
         #expect(meshRow?.displayName == "alice")
         #expect(meshRow?.showsVerifiedBadgeWhenOffline == true)
         #expect(meshRow?.hasUnread == true)
-        #expect(peerListModel.visibleGeohashPeerCount >= 1)
-        #expect(peerListModel.participantCount(for: geohash) >= 1)
-        #expect(peerListModel.geohashPeople.contains(where: { $0.id == remoteGeoID && $0.isTeleported }))
-
-        viewModel.participantTracker.clear()
-        viewModel.teleportedGeo = []
-        locationManager.markTeleported(for: geohash, false)
-        locationManager.select(ChannelID.mesh)
-        await waitUntil {
-            if case ChannelID.mesh = locationManager.selectedChannel {
-                return true
-            }
-            return false
-        }
     }
 }

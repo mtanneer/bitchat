@@ -9,7 +9,7 @@ import Testing
 import Foundation
 import CoreBluetooth
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLEServiceCoreTests {
 
@@ -574,19 +574,21 @@ struct BLEServiceCoreTests {
 
     @Test
     func modifiedServices_rediscoverWhenBitChatServiceIsInvalidated() async throws {
+        let ble = makeService()
         let otherService = CBUUID(string: "0000180F-0000-1000-8000-00805F9B34FB")
 
-        #expect(BLEService._test_shouldRediscoverBitChatService(
-            invalidatedServiceUUIDs: [BLEService.serviceUUID],
+        #expect(ble._test_shouldRediscoverBitChatService(
+            invalidatedServiceUUIDs: [ble.serviceUUID],
             cachedServiceUUIDs: [otherService]
         ))
     }
 
     @Test
     func modifiedServices_rediscoverWhenCachedServicesNoLongerIncludeBitChat() async throws {
+        let ble = makeService()
         let otherService = CBUUID(string: "0000180F-0000-1000-8000-00805F9B34FB")
 
-        #expect(BLEService._test_shouldRediscoverBitChatService(
+        #expect(ble._test_shouldRediscoverBitChatService(
             invalidatedServiceUUIDs: [otherService],
             cachedServiceUUIDs: [otherService]
         ))
@@ -594,11 +596,12 @@ struct BLEServiceCoreTests {
 
     @Test
     func modifiedServices_ignoreUnrelatedInvalidationWhenBitChatIsStillCached() async throws {
+        let ble = makeService()
         let otherService = CBUUID(string: "0000180F-0000-1000-8000-00805F9B34FB")
 
-        #expect(!BLEService._test_shouldRediscoverBitChatService(
+        #expect(!ble._test_shouldRediscoverBitChatService(
             invalidatedServiceUUIDs: [otherService],
-            cachedServiceUUIDs: [BLEService.serviceUUID, otherService]
+            cachedServiceUUIDs: [ble.serviceUUID, otherService]
         ))
     }
 
@@ -669,10 +672,8 @@ private final class OutboundPacketTap {
 private func makeService() -> BLEService {
     let keychain = MockKeychain()
     let identityManager = MockIdentityManager(keychain)
-    let idBridge = NostrIdentityBridge(keychain: MockKeychainHelper())
     return BLEService(
         keychain: keychain,
-        idBridge: idBridge,
         identityManager: identityManager,
         initializeBluetoothManagers: false
     )

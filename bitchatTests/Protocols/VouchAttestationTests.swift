@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import Testing
 
-@testable import bitchat
+@testable import PlaneChat
 
 struct VouchAttestationTests {
     private let voucherKey = Curve25519.Signing.PrivateKey()

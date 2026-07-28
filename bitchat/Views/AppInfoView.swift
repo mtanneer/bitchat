@@ -8,8 +8,6 @@ struct AppInfoView: View {
     @Environment(\.dismiss) var dismiss
     @ThemedPalette private var palette
     @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.matrix.rawValue
-    @EnvironmentObject private var locationChannelsModel: LocationChannelsModel
-    @ObservedObject private var bridgeService = BridgeService.shared
 
     /// Supplies the mesh topology map data. Nil (previews, missing wiring)
     /// hides the topology row entirely.
@@ -20,8 +18,6 @@ struct AppInfoView: View {
 
     @State private var showTopology = false
     @State private var liveVoiceEnabled = PTTSettings.liveVoiceEnabled
-    @State private var locationNotesEnabled = LocationNotesSettings.enabled
-    @ObservedObject private var locationManager = LocationChannelManager.shared
     /// Sticky across opens: first-ever open lands on Info (the gentler
     /// introduction), and afterwards the sheet reopens wherever it was left.
     @AppStorage("appInfo.selectedPane") private var selectedPane: Pane = .info
@@ -57,35 +53,17 @@ struct AppInfoView: View {
             static let tabSettings = String(localized: "app_info.tab.settings", defaultValue: "settings", comment: "Segmented control label for the settings pane of the app info sheet")
             static let tabInfo = String(localized: "app_info.tab.info", defaultValue: "info", comment: "Segmented control label for the info pane of the app info sheet")
 
-            static let connectivityTitle = String(localized: "app_info.settings.connectivity.title", defaultValue: "CONNECTIVITY", comment: "Section header (uppercase) for the connectivity toggles: mesh bridge, internet gateway, tor routing")
-
             static let languageTitle = String(localized: "app_info.settings.language.title", defaultValue: "LANGUAGE", comment: "Section header (uppercase) for the app language picker in settings")
             static let languagePickerLabel = String(localized: "app_info.settings.language.picker_label", defaultValue: "app language", comment: "Label of the app language picker row in settings")
             static let languageSystem = String(localized: "app_info.settings.language.system", defaultValue: "system default", comment: "Menu option that clears the in-app language override so the app follows the device language")
-            static let languageRestartNote = String(localized: "app_info.settings.language.restart_note", defaultValue: "restart bitchat to apply the new language", comment: "Caption shown after the user picks a different app language; the change takes effect on next launch")
+            static let languageRestartNote = String(localized: "app_info.settings.language.restart_note", defaultValue: "restart PlaneChat to apply the new language", comment: "Caption shown after the user picks a different app language; the change takes effect on next launch")
 
-            static let bridgeTitle = String(localized: "app_info.settings.bridge.title", defaultValue: "mesh bridge", comment: "Title of the mesh bridge toggle in settings")
-            static let bridgeSubtitle = String(localized: "app_info.settings.bridge.subtitle", defaultValue: "joins nearby mesh islands over the internet: what you say in the mesh channel also reaches people in your area beyond radio range, and their messages appear here marked with the network glyph. while you have internet, your device also carries bridge and location-channel traffic for phones around you that have none.", comment: "Subtitle explaining what the mesh bridge toggle does")
-            static func bridgeCell(_ cell: String) -> String {
-                String(
-                    format: String(localized: "app_info.settings.bridge.cell", defaultValue: "rendezvous cell: %@", comment: "Caption under the mesh bridge toggle showing the geohash cell the bridge is meeting on"),
-                    locale: .current,
-                    cell
-                )
-            }
-            static let bridgeNoCell = String(localized: "app_info.settings.bridge.no_cell", defaultValue: "no rendezvous cell yet — needs location access or a nearby bridge peer", comment: "Caption under the mesh bridge toggle when the bridge is on but has no geohash cell to meet on")
-
-            // Moved from LocationChannelsSheet; keys unchanged. (The former
-            // internet-gateway toggle is gone: the bridge switch drives all
-            // internet sharing, including geohash-channel gatewaying.)
-            static let torTitle: LocalizedStringKey = "location_channels.tor.title"
-            static let torSubtitle: LocalizedStringKey = "location_channels.tor.subtitle"
             static let toggleOn: LocalizedStringKey = "common.toggle.on"
             static let toggleOff: LocalizedStringKey = "common.toggle.off"
 
             static let dangerTitle = String(localized: "app_info.settings.danger.title", defaultValue: "DANGER ZONE", comment: "Section header (uppercase) for destructive actions in settings")
             static let panicButton = String(localized: "app_info.settings.danger.panic_button", defaultValue: "panic wipe", comment: "Button in the settings danger zone that erases all local data after confirmation")
-            static let panicNote = String(localized: "app_info.settings.danger.panic_note", defaultValue: "erases all messages, keys, and identity. triple-tapping the bitchat/ logo does the same, instantly.", comment: "Caption under the panic wipe button explaining what it does and the triple-tap shortcut")
+            static let panicNote = String(localized: "app_info.settings.danger.panic_note", defaultValue: "erases all messages, keys, and identity. triple-tapping the PlaneChat/ logo does the same, instantly.", comment: "Caption under the panic wipe button explaining what it does and the triple-tap shortcut")
             static let panicConfirmTitle = String(localized: "app_info.settings.danger.panic_confirm_title", defaultValue: "wipe all data?", comment: "Title of the confirmation dialog before a panic wipe")
             static let panicConfirmAction = String(localized: "app_info.settings.danger.panic_confirm_action", defaultValue: "wipe everything", comment: "Destructive confirmation button that performs the panic wipe")
         }
@@ -117,16 +95,6 @@ struct AppInfoView: View {
                 title: "app_info.features.favorites.title",
                 description: "app_info.features.favorites.description"
             )
-            static let geohash = AppInfoFeatureInfo(
-                icon: "number",
-                title: "app_info.features.geohash.title",
-                description: "app_info.features.geohash.description"
-            )
-            static let bridge = AppInfoFeatureInfo(
-                icon: "network",
-                resolvedTitle: String(localized: "app_info.features.bridge.title", defaultValue: "mesh bridging", comment: "Feature row title for the mesh bridge in the app info sheet"),
-                resolvedDescription: String(localized: "app_info.features.bridge.description", defaultValue: "links nearby mesh islands through the internet so one crowd isn't split by radio range", comment: "Feature row description for the mesh bridge in the app info sheet")
-            )
         }
 
         enum Legend {
@@ -137,11 +105,7 @@ struct AppInfoView: View {
             static let items: [(icon: String, color: Color?, text: String)] = [
                 ("antenna.radiowaves.left.and.right", nil, String(localized: "app_info.legend.mesh_connected")),
                 ("point.3.filled.connected.trianglepath.dotted", nil, String(localized: "app_info.legend.mesh_relayed")),
-                ("globe", nil, String(localized: "app_info.legend.nostr")),
-                ("network", Color.cyan, String(localized: "app_info.legend.bridged", defaultValue: "message arrived across a mesh bridge", comment: "Symbols legend entry for the cyan network glyph shown on messages carried across a mesh bridge")),
                 ("person", nil, String(localized: "app_info.legend.offline")),
-                ("mappin.and.ellipse", nil, String(localized: "app_info.legend.location_nearby")),
-                ("face.dashed", nil, String(localized: "app_info.legend.teleported")),
                 ("lock.fill", nil, String(localized: "app_info.legend.encrypted")),
                 ("lock.slash", nil, String(localized: "app_info.legend.encryption_failed")),
                 ("checkmark.seal.fill", nil, String(localized: "app_info.legend.verified")),
@@ -155,14 +119,6 @@ struct AppInfoView: View {
             static let title: LocalizedStringKey = "app_info.voice.title"
             // The live-voice title/description keys are referenced inline at
             // the toggle (they ride the shared settingToggle now).
-        }
-
-        enum Location {
-            static let notes = AppInfoFeatureInfo(
-                icon: "mappin.and.ellipse",
-                title: "app_info.location.notes.title",
-                description: "app_info.location.notes.description"
-            )
         }
 
         enum Network {
@@ -387,96 +343,6 @@ struct AppInfoView: View {
                 }
             }
 
-            // Connectivity: mesh bridge, internet gateway, tor routing
-            VStack(alignment: .leading, spacing: 12) {
-                SectionHeader(verbatim: Strings.Settings.connectivityTitle)
-
-                settingsCard {
-                    settingToggle(
-                        title: Text(Strings.Settings.bridgeTitle),
-                        subtitle: Text(Strings.Settings.bridgeSubtitle),
-                        isOn: bridgeToggleBinding
-                    )
-                    // Where the bridge meets: the geohash rendezvous cell, or
-                    // a hint about why there isn't one yet (no location and no
-                    // bridge peer advertising a cell).
-                    if bridgeService.isEnabled {
-                        Text(bridgeService.activeCell.map(Strings.Settings.bridgeCell) ?? Strings.Settings.bridgeNoCell)
-                            .bitchatFont(size: 11)
-                            .foregroundColor(secondaryTextColor)
-                    }
-                }
-
-                settingsCard {
-                    settingToggle(
-                        title: Text(Strings.Settings.torTitle),
-                        subtitle: Text(Strings.Settings.torSubtitle),
-                        isOn: torToggleBinding
-                    )
-                }
-
-                // Location notes / dead drops (merged from main's flat
-                // layout into the shared card + pill style). Turning it on
-                // may need the location prompt; the permission control below
-                // covers the denied path.
-                settingsCard {
-                    settingToggle(
-                        title: Strings.Location.notes.title,
-                        subtitle: Strings.Location.notes.description,
-                        isOn: Binding(
-                            get: { locationNotesEnabled },
-                            set: { newValue in
-                                locationNotesEnabled = newValue
-                                LocationNotesSettings.enabled = newValue
-                                if newValue {
-                                    locationManager.enableLocationChannels()
-                                }
-                            }
-                        )
-                    )
-                }
-
-                // Location powers the channels list and the bridge cell, so
-                // its control lives with the other connectivity settings.
-                // Platform reality shapes the three states: the app may only
-                // prompt while never-asked; granted/denied both flip in the
-                // system permission screen.
-                switch locationChannelsModel.permissionState {
-                case .authorized:
-                    Button(action: SystemSettings.location.open) {
-                        Text("location_channels.action.remove_access")
-                            .bitchatFont(size: 12)
-                            .foregroundColor(palette.alertRed)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(Color.red.opacity(0.08))
-                            .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                case .notDetermined:
-                    Button(action: { locationChannelsModel.enableLocationChannels() }) {
-                        Text("location_channels.action.request_permissions")
-                            .bitchatFont(size: 12)
-                            .foregroundColor(palette.accent)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
-                            .background(palette.accent.opacity(0.12))
-                            .cornerRadius(6)
-                    }
-                    .buttonStyle(.plain)
-                case .denied, .restricted:
-                    settingsCard {
-                        Text("location_channels.permission_denied")
-                            .bitchatFont(size: 11)
-                            .foregroundColor(secondaryTextColor)
-                        Button("location_channels.action.open_settings", action: SystemSettings.location.open)
-                            .buttonStyle(.plain)
-                            .bitchatFont(size: 12)
-                            .foregroundColor(palette.accent)
-                    }
-                }
-            }
-
             // Danger zone
             if onPanicWipe != nil {
                 VStack(alignment: .leading, spacing: 12) {
@@ -531,22 +397,7 @@ struct AppInfoView: View {
         }
     }
 
-    private var bridgeToggleBinding: Binding<Bool> {
-        Binding(
-            get: { bridgeService.isEnabled },
-            set: { bridgeService.setEnabled($0) }
-        )
-    }
-
-    private var torToggleBinding: Binding<Bool> {
-        Binding(
-            get: { locationChannelsModel.userTorEnabled },
-            set: { locationChannelsModel.setUserTorEnabled($0) }
-        )
-    }
-
-    /// The padded card every connectivity setting sits in (moved look from
-    /// LocationChannelsSheet's toggle sections).
+    /// The padded card each settings toggle sits in.
     private func settingsCard<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8, content: content)
             .padding(12)
@@ -629,11 +480,7 @@ struct AppInfoView: View {
 
                 FeatureRow(info: Strings.Features.extendedRange)
 
-                FeatureRow(info: Strings.Features.bridge)
-
                 FeatureRow(info: Strings.Features.favorites)
-
-                FeatureRow(info: Strings.Features.geohash)
 
                 FeatureRow(info: Strings.Features.mentions)
             }
@@ -752,17 +599,14 @@ struct FeatureRow: View {
 
 #Preview("Default") {
     AppInfoView()
-        .environmentObject(LocationChannelsModel())
 }
 
 #Preview("Dynamic Type XXL") {
     AppInfoView()
-        .environmentObject(LocationChannelsModel())
         .environment(\.sizeCategory, .accessibilityExtraExtraExtraLarge)
 }
 
 #Preview("Dynamic Type XS") {
     AppInfoView()
-        .environmentObject(LocationChannelsModel())
         .environment(\.sizeCategory, .extraSmall)
 }

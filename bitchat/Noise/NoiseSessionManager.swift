@@ -14,7 +14,7 @@ import BitFoundation
 final class NoiseSessionManager {
     private var sessions: [PeerID: NoiseSession] = [:]
     private let sessionFactory: (PeerID, NoiseRole) -> NoiseSession
-    private let managerQueue = DispatchQueue(label: "chat.bitchat.noise.manager", attributes: .concurrent)
+    private let managerQueue = DispatchQueue(label: "chat.planechat.noise.manager", attributes: .concurrent)
     
     // Callbacks
     var onSessionEstablished: ((PeerID, Curve25519.KeyAgreement.PublicKey) -> Void)?

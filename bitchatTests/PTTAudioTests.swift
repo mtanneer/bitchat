@@ -9,7 +9,7 @@
 import Testing
 import AVFoundation
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct PTTAudioTests {
     // MARK: - ADTS framing

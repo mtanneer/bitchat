@@ -1,6 +1,6 @@
 import BitFoundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLELinkStateStoreTests {
     @Test

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("BLE maintenance policy tests")
 struct BLEMaintenancePolicyTests {

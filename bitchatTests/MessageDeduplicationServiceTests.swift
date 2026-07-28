@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - LRU Deduplication Cache Tests
 
@@ -274,7 +274,7 @@ struct MessageDeduplicationServiceTests {
     // MARK: - Content Deduplication
 
     @Test func recordContent_storesTimestamp() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let now = Date()
 
         service.recordContent("Hello World", timestamp: now)
@@ -284,7 +284,7 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func recordContent_updatesTimestamp() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let early = Date(timeIntervalSince1970: 1000)
         let late = Date(timeIntervalSince1970: 2000)
 
@@ -296,14 +296,14 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func contentTimestamp_nilForUnseen() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
 
         let timestamp = service.contentTimestamp(for: "Never seen")
         #expect(timestamp == nil)
     }
 
     @Test func recordContentKey_directKeyAccess() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let now = Date()
         let key = service.normalizedContentKey("Test")
 
@@ -313,7 +313,7 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func forgetContent_allowsAuthenticatedReplacementThroughNextBatch() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let content = "bridge alias payload"
         let timestamp = Date()
         service.recordContent(content, timestamp: timestamp)
@@ -324,7 +324,7 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func forgetContent_doesNotEraseNewerSameContentMarker() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let content = "repeated payload"
         let old = Date(timeIntervalSince1970: 1_000)
         let newer = Date(timeIntervalSince1970: 2_000)
@@ -337,7 +337,7 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func normalizedContentKey_consistentWithNormalizer() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let content = "Hello World"
 
         let serviceKey = service.normalizedContentKey(content)
@@ -346,108 +346,23 @@ struct MessageDeduplicationServiceTests {
         #expect(serviceKey == normalizerKey)
     }
 
-    // MARK: - Nostr Event Deduplication
-
-    @Test func recordNostrEvent_marksAsProcessed() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
-
-        #expect(!service.hasProcessedNostrEvent("event123"))
-
-        service.recordNostrEvent("event123")
-
-        #expect(service.hasProcessedNostrEvent("event123"))
-    }
-
-    @Test func hasProcessedNostrEvent_falseForUnseen() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
-
-        #expect(!service.hasProcessedNostrEvent("never-seen"))
-    }
-
-    @Test func nostrEvent_multipleEvents() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
-
-        service.recordNostrEvent("event1")
-        service.recordNostrEvent("event2")
-        service.recordNostrEvent("event3")
-
-        #expect(service.hasProcessedNostrEvent("event1"))
-        #expect(service.hasProcessedNostrEvent("event2"))
-        #expect(service.hasProcessedNostrEvent("event3"))
-        #expect(!service.hasProcessedNostrEvent("event4"))
-    }
-
-    // MARK: - Nostr ACK Deduplication
-
-    @Test func recordNostrAck_marksAsProcessed() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
-        let ackKey = MessageDeduplicationService.ackKey(
-            messageId: "msg123",
-            ackType: "delivered",
-            senderPubkey: "pubkey456"
-        )
-
-        #expect(!service.hasProcessedNostrAck(ackKey))
-
-        service.recordNostrAck(ackKey)
-
-        #expect(service.hasProcessedNostrAck(ackKey))
-    }
-
-    @Test func ackKey_format() {
-        let key = MessageDeduplicationService.ackKey(
-            messageId: "msg",
-            ackType: "read",
-            senderPubkey: "pub"
-        )
-        #expect(key == "msg:read:pub")
-    }
-
-    @Test func ackKey_differentComponents() {
-        let key1 = MessageDeduplicationService.ackKey(messageId: "a", ackType: "delivered", senderPubkey: "x")
-        let key2 = MessageDeduplicationService.ackKey(messageId: "a", ackType: "read", senderPubkey: "x")
-        let key3 = MessageDeduplicationService.ackKey(messageId: "b", ackType: "delivered", senderPubkey: "x")
-
-        #expect(key1 != key2) // Different ackType
-        #expect(key1 != key3) // Different messageId
-    }
-
     // MARK: - Clear Operations
 
     @Test func clearAll_clearsEverything() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let now = Date()
 
         service.recordContent("Hello", timestamp: now)
-        service.recordNostrEvent("event1")
-        service.recordNostrAck("ack1")
 
         service.clearAll()
 
         #expect(service.contentTimestamp(for: "Hello") == nil)
-        #expect(!service.hasProcessedNostrEvent("event1"))
-        #expect(!service.hasProcessedNostrAck("ack1"))
-    }
-
-    @Test func clearNostrCaches_preservesContent() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
-        let now = Date()
-
-        service.recordContent("Hello", timestamp: now)
-        service.recordNostrEvent("event1")
-        service.recordNostrAck("ack1")
-
-        service.clearNostrCaches()
-
-        #expect(service.contentTimestamp(for: "Hello") == now) // Preserved
-        #expect(!service.hasProcessedNostrEvent("event1")) // Cleared
-        #expect(!service.hasProcessedNostrAck("ack1")) // Cleared
     }
 
     // MARK: - Capacity Tests
 
     @Test func contentCache_respectsCapacity() {
-        let service = MessageDeduplicationService(contentCapacity: 3, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 3)
 
         service.recordContent("a", timestamp: Date())
         service.recordContent("b", timestamp: Date())
@@ -459,23 +374,10 @@ struct MessageDeduplicationServiceTests {
         #expect(service.contentTimestamp(for: "d") != nil)
     }
 
-    @Test func nostrEventCache_respectsCapacity() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 3)
-
-        service.recordNostrEvent("e1")
-        service.recordNostrEvent("e2")
-        service.recordNostrEvent("e3")
-        service.recordNostrEvent("e4")
-
-        // "e1" should have been evicted
-        #expect(!service.hasProcessedNostrEvent("e1"))
-        #expect(service.hasProcessedNostrEvent("e4"))
-    }
-
     // MARK: - Integration Tests
 
     @Test func realWorldDeduplication_similarMessages() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let now = Date()
 
         // Record original message
@@ -487,7 +389,7 @@ struct MessageDeduplicationServiceTests {
     }
 
     @Test func realWorldDeduplication_caseVariations() {
-        let service = MessageDeduplicationService(contentCapacity: 100, nostrEventCapacity: 100)
+        let service = MessageDeduplicationService(contentCapacity: 100)
         let now = Date()
 
         service.recordContent("HELLO WORLD", timestamp: now)
@@ -500,7 +402,7 @@ struct MessageDeduplicationServiceTests {
 
     @Test("Concurrent content recording is safe via MainActor")
     func concurrentContentRecording() async {
-        let service = MessageDeduplicationService(contentCapacity: 1000, nostrEventCapacity: 1000)
+        let service = MessageDeduplicationService(contentCapacity: 1000)
         let iterations = 100
 
         // All operations run on MainActor due to @MainActor annotation
@@ -518,63 +420,6 @@ struct MessageDeduplicationServiceTests {
         #expect(service.contentTimestamp(for: "Message 99") != nil)
     }
 
-    @Test("Concurrent Nostr event recording is safe via MainActor")
-    func concurrentNostrEventRecording() async {
-        let service = MessageDeduplicationService(contentCapacity: 1000, nostrEventCapacity: 1000)
-        let iterations = 100
-
-        await withTaskGroup(of: Void.self) { group in
-            for i in 0..<iterations {
-                group.addTask { @MainActor in
-                    service.recordNostrEvent("event_\(i)")
-                }
-            }
-        }
-
-        // Verify events were recorded
-        #expect(service.hasProcessedNostrEvent("event_0"))
-        #expect(service.hasProcessedNostrEvent("event_99"))
-    }
-
-    @Test("Mixed concurrent operations are safe via MainActor")
-    func concurrentMixedOperations() async {
-        let service = MessageDeduplicationService(contentCapacity: 1000, nostrEventCapacity: 1000)
-        let iterations = 50
-
-        await withTaskGroup(of: Void.self) { group in
-            // Content recording tasks
-            for i in 0..<iterations {
-                group.addTask { @MainActor in
-                    service.recordContent("Content \(i)", timestamp: Date())
-                }
-            }
-
-            // Event recording tasks
-            for i in 0..<iterations {
-                group.addTask { @MainActor in
-                    service.recordNostrEvent("event_\(i)")
-                }
-            }
-
-            // ACK recording tasks
-            for i in 0..<iterations {
-                group.addTask { @MainActor in
-                    service.recordNostrAck("ack_\(i)")
-                }
-            }
-
-            // Read tasks
-            for i in 0..<iterations {
-                group.addTask { @MainActor in
-                    _ = service.contentTimestamp(for: "Content \(i)")
-                    _ = service.hasProcessedNostrEvent("event_\(i)")
-                    _ = service.hasProcessedNostrAck("ack_\(i)")
-                }
-            }
-        }
-
-        // If we reach here without crashes, the test passes
-    }
 }
 
 // MARK: - LRU Cache Thread Safety Tests

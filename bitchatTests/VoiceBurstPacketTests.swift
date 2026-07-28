@@ -8,7 +8,7 @@
 
 import Testing
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct VoiceBurstPacketTests {
     private let burstID = Data((0..<8).map { UInt8($0 + 1) })

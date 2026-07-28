@@ -15,13 +15,24 @@ final class BLEService: NSObject {
     // MARK: - Constants
     
     #if DEBUG
-    static let serviceUUID = CBUUID(string: "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5A") // testnet
+    private static let defaultServiceUUID = CBUUID(string: "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5A") // testnet
     #else
-    static let serviceUUID = CBUUID(string: "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C") // mainnet
+    private static let defaultServiceUUID = CBUUID(string: "F47B5E2D-4A9E-4C5A-9B3F-8E1D2C3A4B5C") // mainnet
     #endif
+    // PlaneChat: roomId-scoped so only room members discover each other (SPEC.md F8/roomId).
+    // Falls back to bitchat's fixed constant when no room is set (tests, pre-room-creation state).
+    let serviceUUID: CBUUID
     static let characteristicUUID = CBUUID(string: "A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D")
-    private static let centralRestorationID = "chat.bitchat.ble.central"
-    private static let peripheralRestorationID = "chat.bitchat.ble.peripheral"
+    /// PlaneChat: apps.android.planechat's GattProfile.PSM_CHARACTERISTIC_UUID —
+    /// UUID.nameUUIDFromBytes("planechat.psm-characteristic") (RFC 4122 v3,
+    /// MD5 of the UTF-8 bytes). Android's GATT contract is PSM-discovery-only:
+    /// this characteristic carries a 2-byte L2CAP PSM, not chat bytes — real
+    /// data flows over L2CAP once the PSM is read (see connectToL2CAPPeer /
+    /// publishL2CAPChannel). Verified byte-exact against Android's actual
+    /// UUID.nameUUIDFromBytes output before wiring in (build-log/interop-test-results.md).
+    static let androidPSMCharacteristicUUID = CBUUID(string: "1A7087CD-4E39-35CF-A74B-E3EEECEB347D")
+    private static let centralRestorationID = "chat.planechat.ble.central"
+    private static let peripheralRestorationID = "chat.planechat.ble.peripheral"
     
     // Default per-fragment chunk size when link limits are unknown
     private let defaultFragmentSize = TransportConfig.bleDefaultFragmentSize
@@ -88,17 +99,9 @@ final class BLEService: NSObject {
     // Guarded by collectionsQueue barriers.
     private var pendingPrekeyBundles: [PeerID: BitchatPacket] = [:]
     private static let pendingPrekeyBundleCap = 64
-    // Gateway mode: sink for received nostrCarrier packets (set by app
-    // wiring, called on the main actor after transport-level checks) and the
-    // runtime-toggled capability bits ORed into `PeerCapabilities.localSupported`
-    // for every announce. `directedToUs` distinguishes an uplink deposit
-    // addressed to this device from a downlink broadcast.
-    var onNostrCarrierPacket: (@MainActor (_ payload: Data, _ from: PeerID, _ directedToUs: Bool) -> Void)?
-    /// Fired (off-main) when a signature-verified announce is processed —
-    /// the bridge courier watch refreshes its tag set on new arrivals.
-    var onVerifiedPeerAnnounce: ((_ peerID: PeerID) -> Void)?
+    // Runtime-toggled capability bits ORed into `PeerCapabilities.localSupported`
+    // for every announce (e.g. feature toggles enabled/disabled after launch).
     private var runtimeCapabilities: PeerCapabilities = []  // collectionsQueue
-    private var localBridgeGeohash: String?  // collectionsQueue
 
     #if DEBUG
     // Test-only tap on the outbound pipeline so multi-node tests can ferry
@@ -155,13 +158,30 @@ final class BLEService: NSObject {
     private var centralManager: CBCentralManager?
     private var peripheralManager: CBPeripheralManager?
     private var characteristic: CBMutableCharacteristic?
+    /// PlaneChat: PSM of the L2CAP channel this peripheral published, once
+    /// known — nil until didPublishL2CAPChannel fires, cleared on
+    /// unpublish/power-off. The PSM characteristic's value is derived from
+    /// this once the service is (re)built.
+    private var pendingPublishedPSM: CBL2CAPPSM?
+    /// PlaneChat: incoming L2CAP channels from Android centrals connecting to
+    /// us as peripheral, keyed by the connecting CBCentral's identifier
+    /// string — mirrors linkStateStore's centralToPeerID keying, but this
+    /// isn't peer-identity state (no announce has happened yet when the
+    /// channel opens), so it stays a separate small map rather than forcing
+    /// it into BLELinkStateStore's peer-identity-oriented shape.
+    private var incomingL2CAPChannels: [String: CBL2CAPChannel] = [:]
+    /// PlaneChat: live L2CAPFramedChannel wrappers, keyed the same way as
+    /// their underlying CBL2CAPChannel (peripheral UUID for central-role
+    /// links, the synthetic key from didOpen for peripheral-role links).
+    /// Kept separate from BLELinkStateStore/incomingL2CAPChannels because
+    /// this class isn't BLE-queue-affine state, just retained I/O plumbing.
+    private var framedChannels: [String: L2CAPFramedChannel] = [:]
     
     // MARK: - Identity
     
     private var noiseService: NoiseEncryptionService
     private let identityManager: SecureIdentityStateManagerProtocol
     private let keychain: KeychainManagerProtocol
-    private let idBridge: NostrIdentityBridge
     /// Binary form of `myPeerID`; same contract — mutated only inside a
     /// `messageQueue` barrier via `refreshPeerIdentity()`.
     private var myPeerIDData: Data = Data()
@@ -273,12 +293,12 @@ final class BLEService: NSObject {
     
     init(
         keychain: KeychainManagerProtocol,
-        idBridge: NostrIdentityBridge,
         identityManager: SecureIdentityStateManagerProtocol,
+        roomId: UUID? = nil,
         initializeBluetoothManagers: Bool = true
     ) {
+        self.serviceUUID = roomId.map { CBUUID(nsuuid: $0) } ?? Self.defaultServiceUUID
         self.keychain = keychain
-        self.idBridge = idBridge
         noiseService = NoiseEncryptionService(keychain: keychain)
         self.identityManager = identityManager
         super.init()
@@ -583,7 +603,7 @@ final class BLEService: NSObject {
         // Start BLE services if not already running
         if centralManager?.state == .poweredOn {
             centralManager?.scanForPeripherals(
-                withServices: [BLEService.serviceUUID],
+                withServices: [self.serviceUUID],
                 options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
             )
         }
@@ -744,42 +764,6 @@ final class BLEService: NSObject {
                 runtimeCapabilities.remove(capability)
             }
             return runtimeCapabilities != before
-        }
-        guard changed else { return }
-        sendAnnounce(forceSend: true)
-    }
-
-    /// Reachable peers currently advertising the `.gateway` capability.
-    func reachableGatewayPeers() -> [PeerID] {
-        let now = Date()
-        return collectionsQueue.sync {
-            peerRegistry.peers(advertising: .gateway)
-                .filter { peerRegistry.isReachable($0, now: now) }
-        }
-    }
-
-    /// Reachable peers currently advertising the `.bridge` capability.
-    func reachableBridgePeers() -> [PeerID] {
-        let now = Date()
-        return collectionsQueue.sync {
-            peerRegistry.peers(advertising: .bridge)
-                .filter { peerRegistry.isReachable($0, now: now) }
-        }
-    }
-
-    /// A rendezvous cell advertised by a bridge-capable peer's announce.
-    func advertisedBridgeGeohash() -> String? {
-        collectionsQueue.sync { peerRegistry.advertisedBridgeGeohash() }
-    }
-
-    /// The rendezvous cell this device advertises in its own announces while
-    /// bridging with the gateway toggle on. Set from the main actor; the
-    /// value rides the next (forced) announce.
-    func setLocalBridgeGeohash(_ cell: String?) {
-        let changed: Bool = collectionsQueue.sync(flags: .barrier) {
-            guard localBridgeGeohash != cell else { return false }
-            localBridgeGeohash = cell
-            return true
         }
         guard changed else { return }
         sendAnnounce(forceSend: true)
@@ -1127,6 +1111,15 @@ final class BLEService: NSObject {
         let directPeripheralState = snapshotDirectPeripheralState(for: recipientPeerID)
         let recipientCentral = snapshotSubscribedCentrals().central(for: recipientPeerID)
 
+        // PlaneChat: Android peer (L2CAP-mode link) — send whole, no
+        // fragmentation (L2CAP CoC is a stream, not MTU-bounded like GATT)
+        // and no GATT write/notify at all for this recipient.
+        if let state = directPeripheralState, state.isConnected,
+           let framedChannel = framedChannels[state.peripheral.identifier.uuidString] {
+            framedChannel.send(data)
+            return
+        }
+
         if let peripheralMaxLen = directPeripheralState?.peripheral.maximumWriteValueLength(for: .withoutResponse),
            data.count > peripheralMaxLen {
             let chunk = BLEOutboundPacketPolicy.fragmentChunkSize(forLinkLimit: peripheralMaxLen)
@@ -1156,6 +1149,18 @@ final class BLEService: NSObject {
             } else {
                 enqueuePendingNotification(data: data, centrals: [recipientCentral], context: "encrypted")
             }
+        }
+
+        // PlaneChat: Android central connected to us via L2CAP (peripheral
+        // role) — these never subscribe to the GATT characteristic at all
+        // (see BLEService.androidPSMCharacteristicUUID's doc comment), so
+        // recipientCentral above is always nil for them; find their L2CAP
+        // link the same way linkStateStore's own reverse maps work.
+        if !sentEncrypted,
+           let centralUUID = linkStateStoreReverseCentralUUID(for: recipientPeerID),
+           let framedChannel = framedChannels[centralUUID] {
+            framedChannel.send(data)
+            sentEncrypted = true
         }
 
         if !sentEncrypted {
@@ -1563,19 +1568,10 @@ final class BLEService: NSObject {
     
     func sendFavoriteNotification(to peerID: PeerID, isFavorite: Bool) {
         SecureLogger.debug("🔔 sendFavoriteNotification peer=\(peerID.id.prefix(8))… isFavorite=\(isFavorite)", category: .session)
-        
-        // Include Nostr public key in the notification
-        var content = isFavorite ? "[FAVORITED]" : "[UNFAVORITED]"
-        var includesNostrIdentity = false
-        
-        // Add our Nostr public key if available
-        if let myNostrIdentity = try? idBridge.getCurrentNostrIdentity() {
-            content += ":" + myNostrIdentity.npub
-            includesNostrIdentity = true
-            SecureLogger.debug("📝 Favorite notification includes Nostr npub=\(myNostrIdentity.npub.prefix(16))…", category: .session)
-        }
-        
-        SecureLogger.debug("📤 Sending favorite notification to \(peerID.id.prefix(8))… isFavorite=\(isFavorite) includesNostrIdentity=\(includesNostrIdentity)", category: .session)
+
+        let content = isFavorite ? "[FAVORITED]" : "[UNFAVORITED]"
+
+        SecureLogger.debug("📤 Sending favorite notification to \(peerID.id.prefix(8))… isFavorite=\(isFavorite)", category: .session)
         sendPrivateMessage(content, to: peerID, messageID: UUID().uuidString)
     }
     
@@ -1648,11 +1644,10 @@ final class BLEService: NSObject {
         let noisePub = noiseService.getStaticPublicKeyData()  // For noise handshakes and peer identification
         let signingPub = noiseService.getSigningPublicKeyData()  // For signature verification
         
-        let (connectedPeerIDs, advertisedCapabilities, advertisedBridgeCell): ([Data], PeerCapabilities, String?) = collectionsQueue.sync {
+        let (connectedPeerIDs, advertisedCapabilities): ([Data], PeerCapabilities) = collectionsQueue.sync {
             (
                 peerRegistry.connectedRoutingData,
-                PeerCapabilities.localSupported.union(runtimeCapabilities),
-                runtimeCapabilities.contains(.bridge) ? localBridgeGeohash : nil
+                PeerCapabilities.localSupported.union(runtimeCapabilities)
             )
         }
 
@@ -1662,7 +1657,7 @@ final class BLEService: NSObject {
             signingPublicKey: signingPub,
             directNeighbors: connectedPeerIDs,
             capabilities: advertisedCapabilities,
-            bridgeGeohash: advertisedBridgeCell
+            bridgeGeohash: nil
         )
         
         guard let payload = announcement.encode() else {
@@ -1872,7 +1867,9 @@ extension BLEService: CBCentralManagerDelegate {
                 isConnecting: wasConnecting || peripheral.state == .connecting,
                 isConnected: wasConnected || peripheral.state == .connected,
                 lastConnectionAttempt: existing?.lastConnectionAttempt,
-                assembler: assembler
+                assembler: assembler,
+                l2capChannel: existing?.l2capChannel,
+                pendingPSMRead: existing?.pendingPSMRead ?? false
             )
             linkStateStore.setPeripheralState(restoredState, for: identifier)
 
@@ -1909,7 +1906,7 @@ extension BLEService: CBCentralManagerDelegate {
                 && state.characteristic == nil
                 && state.peripheral.state == .connected {
                 SecureLogger.info("♻️ Rediscovering services on restored link: \(state.peripheral.identifier.uuidString.prefix(8))…", category: .session)
-                state.peripheral.discoverServices([BLEService.serviceUUID])
+                state.peripheral.discoverServices([self.serviceUUID])
             }
 
             // Start scanning - use allow duplicates for faster discovery when active
@@ -1970,7 +1967,7 @@ extension BLEService: CBCentralManagerDelegate {
         #endif
         
         central.scanForPeripherals(
-                withServices: [BLEService.serviceUUID],
+                withServices: [self.serviceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: allowDuplicates]
         )
         
@@ -2038,7 +2035,7 @@ extension BLEService: CBCentralManagerDelegate {
         SecureLogger.debug("✅ Connected: \(peripheral.name ?? "Unknown") [\(peripheralID)]", category: .session)
         
         // Discover services
-        peripheral.discoverServices([BLEService.serviceUUID])
+        peripheral.discoverServices([self.serviceUUID])
     }
     
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
@@ -2244,7 +2241,7 @@ extension BLEService {
 }
 
 private extension BLEService {
-    static func shouldRediscoverBitChatService(
+    func shouldRediscoverBitChatService(
         invalidatedServiceUUIDs: [CBUUID],
         cachedServiceUUIDs: [CBUUID]?
     ) -> Bool {
@@ -2360,7 +2357,7 @@ extension BLEService {
         try noiseService.processHandshakeMessage(from: peerID, message: message)
     }
 
-    static func _test_shouldRediscoverBitChatService(
+    func _test_shouldRediscoverBitChatService(
         invalidatedServiceUUIDs: [CBUUID],
         cachedServiceUUIDs: [CBUUID]?
     ) -> Bool {
@@ -2381,7 +2378,7 @@ extension BLEService: CBPeripheralDelegate {
             // Retry service discovery after a delay
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 guard peripheral.state == .connected else { return }
-                peripheral.discoverServices([BLEService.serviceUUID])
+                peripheral.discoverServices([self.serviceUUID])
             }
             return
         }
@@ -2391,7 +2388,7 @@ extension BLEService: CBPeripheralDelegate {
             return
         }
         
-        guard let service = services.first(where: { $0.uuid == BLEService.serviceUUID }) else {
+        guard let service = services.first(where: { $0.uuid == self.serviceUUID }) else {
             // Not a BitChat peer - disconnect
             centralManager?.cancelPeripheralConnection(peripheral)
             return
@@ -2408,10 +2405,23 @@ extension BLEService: CBPeripheralDelegate {
         }
         
         guard let characteristic = service.characteristics?.first(where: { $0.uuid == BLEService.characteristicUUID }) else {
+            // PlaneChat: no direct-chat characteristic — check for Android's
+            // PSM-discovery one before giving up. Android's GATT contract
+            // never exposes the direct-chat characteristic at all (see
+            // androidPSMCharacteristicUUID's doc comment), so this is the
+            // only place cross-platform peers can be detected structurally,
+            // before any announce/capability exchange is possible.
+            if let psmCharacteristic = service.characteristics?.first(where: { $0.uuid == BLEService.androidPSMCharacteristicUUID }) {
+                let peripheralID = peripheral.identifier.uuidString
+                linkStateStore.updatePeripheral(peripheralID) { $0.pendingPSMRead = true }
+                peripheral.readValue(for: psmCharacteristic)
+                SecureLogger.debug("📡 Found Android PSM characteristic for \(peripheral.name ?? "Unknown") — reading PSM before opening L2CAP", category: .session)
+                return
+            }
             SecureLogger.warning("⚠️ No matching characteristic found for \(peripheral.name ?? "Unknown")", category: .session)
             return
         }
-        
+
         // Found characteristic
         
         // Log characteristic properties for debugging
@@ -2453,13 +2463,35 @@ extension BLEService: CBPeripheralDelegate {
             SecureLogger.error("❌ Error receiving notification: \(error.localizedDescription)", category: .session)
             return
         }
-        
+
         guard let data = characteristic.value, !data.isEmpty else {
             SecureLogger.warning("⚠️ No data in notification", category: .session)
             return
         }
 
+        if characteristic.uuid == BLEService.androidPSMCharacteristicUUID {
+            handlePSMCharacteristicValue(data, from: peripheral)
+            return
+        }
+
         bufferNotificationChunk(data, from: peripheral)
+    }
+
+    /// PlaneChat: Android's PSM characteristic value arrived — decode the
+    /// 2-byte big-endian PSM (mirrors GattProfile.decodePsm exactly) and open
+    /// the L2CAP channel it names. GATT's job for this peer ends here; all
+    /// chat bytes for this link flow over the L2CAP stream from this point.
+    private func handlePSMCharacteristicValue(_ data: Data, from peripheral: CBPeripheral) {
+        let peripheralID = peripheral.identifier.uuidString
+        linkStateStore.updatePeripheral(peripheralID) { $0.pendingPSMRead = false }
+
+        guard data.count == 2 else {
+            SecureLogger.error("❌ PSM characteristic value must be exactly 2 bytes, got \(data.count) for \(peripheral.name ?? "Unknown")", category: .session)
+            return
+        }
+        let psm = CBL2CAPPSM(data.withUnsafeBytes { $0.loadUnaligned(as: UInt16.self) }.bigEndian)
+        SecureLogger.debug("📡 Decoded PSM \(psm) for \(peripheral.name ?? "Unknown") — opening L2CAP channel", category: .session)
+        peripheral.openL2CAPChannel(psm)
     }
 
     private func bufferNotificationChunk(_ chunk: Data, from peripheral: CBPeripheral) {
@@ -2472,7 +2504,9 @@ extension BLEService: CBPeripheralDelegate {
             isConnecting: false,
             isConnected: peripheral.state == .connected,
             lastConnectionAttempt: nil,
-            assembler: NotificationStreamAssembler()
+            assembler: NotificationStreamAssembler(),
+            l2capChannel: nil,
+            pendingPSMRead: false
         )
 
         var assembler = state.assembler
@@ -2533,6 +2567,48 @@ extension BLEService: CBPeripheralDelegate {
         }
     }
 
+    /// PlaneChat: handles one complete frame arriving over an L2CAP channel
+    /// opened for an Android peripheral link. Mirrors bufferNotificationChunk's
+    /// per-frame body (ingress acceptance, unbound-link announce binding,
+    /// dedup, dispatch) but skips NotificationStreamAssembler's chunk
+    /// reassembly entirely — L2CAPFramedChannel's length-prefix framing
+    /// already delivers whole BitchatPacket-encoded frames, so there is
+    /// nothing to reassemble.
+    private func handleL2CAPFrame(_ frame: Data, peripheral: CBPeripheral, peripheralUUID: String) {
+        guard let packet = BinaryProtocol.decode(frame) else {
+            let prefix = frame.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+            SecureLogger.error("❌ Failed to decode L2CAP frame (len=\(frame.count), prefix=\(prefix))", category: .session)
+            return
+        }
+
+        let boundPeerID = linkStateStore.state(forPeripheralID: peripheralUUID)?.peerID
+        let claimedSenderID = PeerID(hexData: packet.senderID)
+        let context = acceptedIngressContext(
+            for: packet,
+            claimedSenderID: claimedSenderID,
+            boundPeerID: boundPeerID,
+            linkDescription: "L2CAP peripheral \(peripheralUUID.prefix(8))…"
+        )
+        guard let context else { return }
+
+        if boundPeerID == nil,
+           packet.type == MessageType.announce.rawValue,
+           packet.ttl == messageTTL {
+            linkStateStore.bindPeripheral(peripheralUUID, to: claimedSenderID)
+        }
+
+        guard recordIngressIfNew(packet, link: .peripheral(peripheralUUID), peerID: context.receivedFromPeerID) else {
+            return
+        }
+
+        processNotificationPacket(
+            packet,
+            from: peripheral,
+            peripheralUUID: peripheralUUID,
+            receivedFrom: context.receivedFromPeerID
+        )
+    }
+
     private func processNotificationPacket(_ packet: BitchatPacket, from _: CBPeripheral, peripheralUUID: String, receivedFrom peerID: PeerID) {
         let senderID = PeerID(hexData: packet.senderID)
 
@@ -2576,7 +2652,7 @@ extension BLEService: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
         SecureLogger.warning("⚠️ Services modified for \(peripheral.name ?? peripheral.identifier.uuidString)", category: .session)
 
-        let shouldRediscover = BLEService.shouldRediscoverBitChatService(
+        let shouldRediscover = shouldRediscoverBitChatService(
             invalidatedServiceUUIDs: invalidatedServices.map(\.uuid),
             cachedServiceUUIDs: peripheral.services?.map(\.uuid)
         )
@@ -2590,7 +2666,7 @@ extension BLEService: CBPeripheralDelegate {
         }
 
         SecureLogger.debug("🔄 BitChat service changed for \(peripheral.name ?? peripheral.identifier.uuidString), rediscovering", category: .session)
-        peripheral.discoverServices([BLEService.serviceUUID])
+        peripheral.discoverServices([self.serviceUUID])
     }
     
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
@@ -2607,6 +2683,43 @@ extension BLEService: CBPeripheralDelegate {
         }
     }
 
+    /// PlaneChat: Android peer's L2CAP channel opened (in response to
+    /// openL2CAPChannel(_:) called from handlePSMCharacteristicValue). From
+    /// here on, chat bytes for this peer flow over the channel's streams
+    /// instead of GATT read/write/notify — reusing handleL2CAPFrame's exact
+    /// ingress logic (which itself reuses processNotificationPacket) via
+    /// the L2CAPFramedChannel's frame callback.
+    func peripheral(_ peripheral: CBPeripheral, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        if let error = error {
+            SecureLogger.error("❌ Failed to open L2CAP channel for \(peripheral.name ?? "Unknown"): \(error.localizedDescription)", category: .session)
+            return
+        }
+        guard let channel else {
+            SecureLogger.error("❌ L2CAP channel open succeeded but channel is nil for \(peripheral.name ?? "Unknown")", category: .session)
+            return
+        }
+
+        let peripheralID = peripheral.identifier.uuidString
+        linkStateStore.updatePeripheral(peripheralID) { $0.l2capChannel = channel }
+
+        let framedChannel = L2CAPFramedChannel(
+            channel: channel,
+            onFrame: { [weak self] frame in
+                self?.messageQueue.async {
+                    self?.handleL2CAPFrame(frame, peripheral: peripheral, peripheralUUID: peripheralID)
+                }
+            },
+            onClose: { [weak self] in
+                self?.messageQueue.async {
+                    self?.framedChannels.removeValue(forKey: peripheralID)
+                    self?.linkStateStore.updatePeripheral(peripheralID) { $0.l2capChannel = nil }
+                }
+            }
+        )
+        framedChannels[peripheralID] = framedChannel
+        SecureLogger.debug("✅ L2CAP channel open for \(peripheral.name ?? "Unknown")", category: .session)
+    }
+
 }
 
 // MARK: - CBPeripheralManagerDelegate
@@ -2620,6 +2733,20 @@ extension BLEService: CBPeripheralManagerDelegate {
             // Remove all services first to ensure clean state
             peripheral.removeAllServices()
 
+            // PlaneChat: publish the L2CAP channel best-effort — its PSM
+            // isn't known until didPublishL2CAPChannel fires (an async
+            // CoreBluetooth callback with no completion guarantee), but
+            // advertising must NOT wait on it: gating peripheral.add(service)
+            // behind L2CAP publish success meant advertising never started
+            // at all if that callback was slow or never fired, breaking
+            // iOS↔iOS discovery too (found via a live device test that
+            // showed zero advertisements reaching Android at all). The PSM
+            // characteristic's value is always nil (dynamic) — answered on
+            // demand via didReceiveRead, so it can reflect the PSM whenever
+            // it becomes available without needing the service re-added.
+            pendingPublishedPSM = nil
+            peripheral.publishL2CAPChannel(withEncryption: false)
+
             // Create characteristic
             characteristic = CBMutableCharacteristic(
                 type: BLEService.characteristicUUID,
@@ -2628,18 +2755,27 @@ extension BLEService: CBPeripheralManagerDelegate {
                 permissions: [.readable, .writeable]
             )
 
-            // Create service
-            let service = CBMutableService(type: BLEService.serviceUUID, primary: true)
-            service.characteristics = [characteristic!]
+            let psmCharacteristic = CBMutableCharacteristic(
+                type: BLEService.androidPSMCharacteristicUUID,
+                properties: [.read],
+                value: nil,
+                permissions: [.readable]
+            )
 
-            // Add service (advertising will start in didAdd delegate)
-            SecureLogger.debug("🔧 Adding BLE service...", category: .session)
+            let service = CBMutableService(type: self.serviceUUID, primary: true)
+            service.characteristics = [characteristic!, psmCharacteristic]
+
+            SecureLogger.debug("🔧 Adding BLE service (direct-chat + PSM characteristics)...", category: .session)
             peripheral.add(service)
 
         case .poweredOff:
             // Bluetooth was turned off - clean up peripheral state
             SecureLogger.info("📴 Bluetooth powered off - cleaning up peripheral state", category: .session)
             peripheral.stopAdvertising()
+            if let psm = pendingPublishedPSM {
+                peripheral.unpublishL2CAPChannel(psm)
+            }
+            pendingPublishedPSM = nil
             // Clear subscribed centrals (they are now invalid)
             let centralPeerIDs = linkStateStore.clearCentrals()
             subscriptionAnnounceLimiter.removeAll()
@@ -2687,7 +2823,7 @@ extension BLEService: CBPeripheralManagerDelegate {
 
         // Attempt to recover characteristic from restored services
         if characteristic == nil {
-            if let service = restoredServices.first(where: { $0.uuid == BLEService.serviceUUID }),
+            if let service = restoredServices.first(where: { $0.uuid == self.serviceUUID }),
                let restoredCharacteristic = service.characteristics?.first(where: { $0.uuid == BLEService.characteristicUUID }) as? CBMutableCharacteristic {
                 characteristic = restoredCharacteristic
             }
@@ -2943,6 +3079,97 @@ extension BLEService: CBPeripheralManagerDelegate {
 
         handleReceivedPacket(packet, from: context.receivedFromPeerID)
     }
+
+    /// PlaneChat: our L2CAP channel is now published with a real PSM — build
+    /// and add the GATT service with BOTH characteristics now that the PSM
+    /// characteristic's value can be set. iOS peers use the direct-chat
+    /// characteristic (unchanged); Android peers read the PSM one, then
+    /// connect to this same published channel via their own L2CAP client.
+    func peripheralManager(_ peripheral: CBPeripheralManager, didPublishL2CAPChannel PSM: CBL2CAPPSM, error: Error?) {
+        if let error = error {
+            SecureLogger.error("❌ Failed to publish L2CAP channel: \(error.localizedDescription)", category: .session)
+        } else {
+            SecureLogger.debug("✅ Published L2CAP channel, PSM=\(PSM)", category: .session)
+        }
+        // PlaneChat: advertising/the GATT service are already up (added
+        // unconditionally in .poweredOn) — this only records the PSM so the
+        // characteristic-read handler (didReceiveRead) can answer it once
+        // available. No service re-add needed either way.
+        pendingPublishedPSM = error == nil ? PSM : nil
+    }
+
+    /// PlaneChat: answers reads on the PSM characteristic dynamically (its
+    /// CBMutableCharacteristic.value is always nil) so it can reflect
+    /// whichever PSM is currently valid — including "not yet published" —
+    /// without ever needing the GATT service removed and re-added, which
+    /// would drop any already-subscribed centrals.
+    func peripheralManager(_ peripheral: CBPeripheralManager, didReceiveRead request: CBATTRequest) {
+        guard request.characteristic.uuid == BLEService.androidPSMCharacteristicUUID else {
+            peripheral.respond(to: request, withResult: .attributeNotFound)
+            return
+        }
+        guard let psm = pendingPublishedPSM else {
+            peripheral.respond(to: request, withResult: .unlikelyError)
+            return
+        }
+        guard request.offset == 0 else {
+            peripheral.respond(to: request, withResult: .invalidOffset)
+            return
+        }
+
+        var bigEndianPSM = UInt16(psm).bigEndian
+        request.value = withUnsafeBytes(of: &bigEndianPSM) { Data($0) }
+        peripheral.respond(to: request, withResult: .success)
+    }
+
+    /// PlaneChat: an Android central connected to our published L2CAP
+    /// channel (after reading the PSM characteristic). Chat bytes for that
+    /// central now flow over this channel's streams instead of
+    /// didReceiveWrite/updateValue — reusing processDecodedCentralWrite's
+    /// exact ingress logic (acceptance, dedup, binding, dispatch) via
+    /// handlePeripheralRoleL2CAPFrame, keyed by CBL2CAPChannel.peer's
+    /// identifier the same way didReceiveWrite keys by CBCentral.identifier.
+    func peripheralManager(_ peripheral: CBPeripheralManager, didOpen channel: CBL2CAPChannel?, error: Error?) {
+        if let error = error {
+            SecureLogger.error("❌ Failed to open incoming L2CAP channel: \(error.localizedDescription)", category: .session)
+            return
+        }
+        guard let channel, let central = channel.peer as? CBCentral else {
+            SecureLogger.error("❌ Incoming L2CAP channel open succeeded but channel/peer is nil", category: .session)
+            return
+        }
+
+        let centralUUID = central.identifier.uuidString
+        incomingL2CAPChannels[centralUUID] = channel
+        let framedChannel = L2CAPFramedChannel(
+            channel: channel,
+            onFrame: { [weak self] frame in
+                self?.messageQueue.async {
+                    self?.handlePeripheralRoleL2CAPFrame(frame, centralUUID: centralUUID, central: central)
+                }
+            },
+            onClose: { [weak self] in
+                self?.messageQueue.async {
+                    self?.framedChannels.removeValue(forKey: centralUUID)
+                    self?.incomingL2CAPChannels.removeValue(forKey: centralUUID)
+                }
+            }
+        )
+        framedChannels[centralUUID] = framedChannel
+        SecureLogger.debug("✅ Incoming L2CAP channel open (peripheral role) for central \(centralUUID.prefix(8))…", category: .session)
+    }
+
+    /// PlaneChat: mirrors processDecodedCentralWrite exactly, for a frame
+    /// that arrived over L2CAP instead of a GATT write — same ingress rules,
+    /// same dedup, same dispatch, just a different physical carrier.
+    private func handlePeripheralRoleL2CAPFrame(_ frame: Data, centralUUID: String, central: CBCentral) {
+        guard let packet = BinaryProtocol.decode(frame) else {
+            let prefix = frame.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " ")
+            SecureLogger.error("❌ Failed to decode L2CAP frame from central \(centralUUID.prefix(8))… (len=\(frame.count), prefix=\(prefix))", category: .session)
+            return
+        }
+        processDecodedCentralWrite(packet, centralUUID: centralUUID, central: central)
+    }
 }
 
 // MARK: - Advertising Builders & Alias Rotation
@@ -2950,7 +3177,7 @@ extension BLEService: CBPeripheralManagerDelegate {
 extension BLEService {
     private func buildAdvertisementData() -> [String: Any] {
         let data: [String: Any] = [
-            CBAdvertisementDataServiceUUIDsKey: [BLEService.serviceUUID]
+            CBAdvertisementDataServiceUUIDsKey: [self.serviceUUID]
         ]
         // No Local Name for privacy
         return data
@@ -3950,80 +4177,6 @@ extension BLEService {
         return nil
     }
 
-    // MARK: Gateway carrier (nostrCarrier)
-
-    /// Sign and send an encoded `toGateway` carrier payload directed at a
-    /// gateway peer. The packet is signed so the gateway can key its uplink
-    /// quotas to an authenticated depositor; the carried Nostr event has its
-    /// own Schnorr signature for content authenticity. Returns false when
-    /// the gateway is not reachable or signing fails.
-    func sendNostrCarrier(_ payload: Data, to gatewayPeer: PeerID) -> Bool {
-        guard isPeerReachable(gatewayPeer) else { return false }
-        let packet = BitchatPacket(
-            type: MessageType.nostrCarrier.rawValue,
-            senderID: myPeerIDData,
-            recipientID: Data(hexString: gatewayPeer.id),
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            payload: payload,
-            signature: nil,
-            ttl: messageTTL
-        )
-        guard let signed = noiseService.signPacket(packet) else { return false }
-        messageQueue.async { [weak self] in
-            // broadcastPacket applies a known route when one exists and
-            // otherwise floods the directed packet like a DM, so a gateway
-            // that is reachable but multi-hop still gets the deposit.
-            self?.broadcastPacket(signed)
-        }
-        return true
-    }
-
-    /// Broadcast an encoded `fromGateway` carrier payload on the mesh with
-    /// the default TTL. Unsigned at the packet layer — receivers verify the
-    /// carried event's own Schnorr signature.
-    func broadcastNostrCarrier(_ payload: Data) {
-        let packet = BitchatPacket(
-            type: MessageType.nostrCarrier.rawValue,
-            senderID: myPeerIDData,
-            recipientID: nil,
-            timestamp: UInt64(Date().timeIntervalSince1970 * 1000),
-            payload: payload,
-            signature: nil,
-            ttl: messageTTL
-        )
-        messageQueue.async { [weak self] in
-            self?.broadcastPacket(packet)
-        }
-    }
-
-    /// Transport-level handling for a received nostrCarrier packet; policy
-    /// (verification of the carried event, quotas, loop prevention) lives in
-    /// `GatewayService` behind `onNostrCarrierPacket`.
-    private func handleNostrCarrier(_ packet: BitchatPacket, from _: PeerID) {
-        let senderID = PeerID(hexData: packet.senderID)
-        let directedToUs: Bool
-        if let recipientID = packet.recipientID {
-            // Carriers addressed elsewhere ride the generic relay path untouched.
-            guard recipientID == myPeerIDData else { return }
-            // Uplink deposit: quotas are keyed by the depositor, so the
-            // packet signature must verify against the sender's announced
-            // signing key. Unlike courier deposits the depositor may be
-            // multi-hop away, so ingress-link identity is not required.
-            let signingKey = collectionsQueue.sync { peerRegistry.info(for: senderID)?.signingPublicKey }
-            guard let signingKey,
-                  noiseService.verifyPacketSignature(packet, publicKey: signingKey) else {
-                SecureLogger.debug("🌐 nostrCarrier uplink from \(senderID.id.prefix(8))… rejected (missing/invalid packet signature)", category: .security)
-                return
-            }
-            directedToUs = true
-        } else {
-            directedToUs = false
-        }
-        let payload = packet.payload
-        notifyUI { [weak self] in
-            self?.onNostrCarrierPacket?(payload, senderID, directedToUs)
-        }
-    }
 
     // MARK: Link capability snapshots (thread-safe via bleQueue)
 
@@ -4045,6 +4198,16 @@ extension BLEService {
 
     private func snapshotSubscribedCentrals() -> BLESubscribedCentralSnapshot {
         readLinkState(\.subscribedCentralSnapshot)
+    }
+
+    /// PlaneChat: reverse lookup for the L2CAP peripheral-role send path —
+    /// linkStateStore.centralToPeerID has no by-value helper since nothing
+    /// else needed one; this dict is small (one entry per connected central),
+    /// so a linear scan is simpler than adding a second reverse map.
+    private func linkStateStoreReverseCentralUUID(for peerID: PeerID) -> String? {
+        readLinkState { store in
+            store.subscribedCentralSnapshot.peerIDsByCentralUUID.first { $0.value == peerID }?.key
+        }
     }
     
     // MARK: Helpers: IDs, selection, and write backpressure
@@ -4251,7 +4414,9 @@ extension BLEService {
                         isConnecting: true,
                         isConnected: false,
                         lastConnectionAttempt: nil,
-                        assembler: NotificationStreamAssembler()
+                        assembler: NotificationStreamAssembler(),
+                        l2capChannel: nil,
+                        pendingPSMRead: false
                     ),
                     for: target.peripheralID
                 )
@@ -4768,7 +4933,8 @@ extension BLEService {
             // Invalid or deleted posts must not spread; skip the relay step.
             guard handleBoardPost(packet, from: senderID) else { return }
         case .nostrCarrier:
-            handleNostrCarrier(packet, from: peerID)
+            // No Nostr transport in this fork — ignore, do not relay.
+            return
 
         case .voiceFrame:
             // Rejected frames (unsigned/stale/spoofed) must not spread; skip
@@ -4859,12 +5025,6 @@ extension BLEService {
         if let result, result.isVerified, result.isDirectAnnounce {
             rebindLinkAfterVerifiedDirectAnnounce(packet, to: result.peerID)
             retireRedundantPeripheralLinks(packet, to: result.peerID)
-        }
-
-        // Bridge courier watch: a verified announce may add a peer whose
-        // relay-parked drops we should start watching for.
-        if let result, result.isVerified {
-            onVerifiedPeerAnnounce?(result.peerID)
         }
 
         // Courier work: an announce is the moment we learn a peer's Noise

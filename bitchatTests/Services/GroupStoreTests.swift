@@ -9,7 +9,7 @@
 import Foundation
 import Testing
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 struct GroupStoreTests {

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 
-@testable import bitchat
+@testable import PlaneChat
 
 /// Vouch storage, accept-policy gates, derived trust levels, and persistence
 /// compatibility for `SecureIdentityStateManager`.

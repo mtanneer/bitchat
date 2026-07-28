@@ -24,38 +24,6 @@ extension ChatViewModel {
     }
 
     @MainActor
-    func sendGeohashDM(_ content: String, to peerID: PeerID) {
-        privateConversationCoordinator.sendGeohashDM(content, to: peerID)
-    }
-
-    @MainActor
-    func handlePrivateMessage(
-        _ payload: NoisePayload,
-        senderPubkey: String,
-        convKey: PeerID,
-        id: NostrIdentity,
-        messageTimestamp: Date
-    ) {
-        privateConversationCoordinator.handlePrivateMessage(
-            payload,
-            senderPubkey: senderPubkey,
-            convKey: convKey,
-            id: id,
-            messageTimestamp: messageTimestamp
-        )
-    }
-
-    @MainActor
-    func handleDelivered(_ payload: NoisePayload, senderPubkey: String, convKey: PeerID) {
-        privateConversationCoordinator.handleDelivered(payload, senderPubkey: senderPubkey, convKey: convKey)
-    }
-
-    @MainActor
-    func handleReadReceipt(_ payload: NoisePayload, senderPubkey: String, convKey: PeerID) {
-        privateConversationCoordinator.handleReadReceipt(payload, senderPubkey: senderPubkey, convKey: convKey)
-    }
-
-    @MainActor
     func sendVoiceNote(at url: URL) {
         mediaTransferCoordinator.sendVoiceNote(at: url)
     }
@@ -84,9 +52,8 @@ extension ChatViewModel {
             return .peer(peerID)
         }
 
-        // Public mesh timeline: signed live broadcast. Geohash channels never
-        // reach here (the composer hides media affordances there).
-        return activeChannel == .mesh ? .publicMesh : nil
+        // Public mesh timeline: signed live broadcast.
+        return .publicMesh
     }
 
     /// Picks the capture backend for the composer's hold-to-record gesture:

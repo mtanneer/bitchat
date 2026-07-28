@@ -1,6 +1,6 @@
 import XCTest
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 final class RequestSyncManagerTests: XCTestCase {
     func test_isValidResponse_returnsFalseWhenPacketIsNotRSR() {

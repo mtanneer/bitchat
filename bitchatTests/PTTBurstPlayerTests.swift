@@ -9,7 +9,7 @@
 import Testing
 import AVFoundation
 import Foundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Thread-safe: the coordinator invokes it on its private serial queue.
 private final class StubAudioSession: SessionApplying, @unchecked Sendable {

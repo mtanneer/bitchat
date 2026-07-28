@@ -10,7 +10,7 @@ import Testing
 import Foundation
 import CryptoKit
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 /// Sender-side cache of peers' verified prekey bundles: latest-wins ingest,
 /// per-message prekey assignment (never reused across messages), expiry, and

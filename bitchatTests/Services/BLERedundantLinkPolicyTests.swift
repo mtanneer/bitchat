@@ -1,7 +1,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct BLERedundantLinkPolicyTests {
     private let peer = PeerID(str: "1122334455667788")

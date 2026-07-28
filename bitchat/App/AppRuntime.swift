@@ -23,16 +23,13 @@ final class AppRuntime: ObservableObject {
     let privateConversationModel: PrivateConversationModel
     let verificationModel: VerificationModel
     let conversationUIModel: ConversationUIModel
-    let locationChannelsModel: LocationChannelsModel
     let peerListModel: PeerListModel
     let appChromeModel: AppChromeModel
     let boardAlertsModel: BoardAlertsModel
+    private var historyBridge: RoomHistoryBridge?
 
-    private let idBridge: NostrIdentityBridge
     private var cancellables = Set<AnyCancellable>()
     private var started = false
-    private var lastNostrRelayConnectedState = false
-    private var didHandleInitialNostrConnection = false
 
     #if os(iOS)
     private var didHandleInitialActive = false
@@ -40,31 +37,24 @@ final class AppRuntime: ObservableObject {
     #endif
 
     init(
-        keychain: KeychainManagerProtocol = KeychainManager.makeDefault(),
-        idBridge: NostrIdentityBridge = NostrIdentityBridge()
+        roomId: UUID? = nil,
+        keychain: KeychainManagerProtocol = KeychainManager.makeDefault()
     ) {
-        self.idBridge = idBridge
         let conversations = ConversationStore()
         let peerIdentityStore = PeerIdentityStore()
-        let locationPresenceStore = LocationPresenceStore()
-        let locationManager = LocationChannelManager.shared
         self.conversations = conversations
         self.chatViewModel = ChatViewModel(
             keychain: keychain,
-            idBridge: idBridge,
             identityManager: SecureIdentityStateManager(keychain),
+            roomId: roomId,
             conversations: conversations,
-            peerIdentityStore: peerIdentityStore,
-            locationPresenceStore: locationPresenceStore,
-            locationManager: locationManager
+            peerIdentityStore: peerIdentityStore
         )
         self.publicChatModel = PublicChatModel(conversations: conversations)
         self.privateInboxModel = PrivateInboxModel(conversations: conversations)
-        self.locationChannelsModel = LocationChannelsModel(manager: locationManager)
         self.privateConversationModel = PrivateConversationModel(
             chatViewModel: self.chatViewModel,
             conversations: conversations,
-            locationChannelsModel: self.locationChannelsModel,
             peerIdentityStore: peerIdentityStore
         )
         self.verificationModel = VerificationModel(
@@ -80,9 +70,7 @@ final class AppRuntime: ObservableObject {
         self.peerListModel = PeerListModel(
             chatViewModel: self.chatViewModel,
             conversations: conversations,
-            locationChannelsModel: self.locationChannelsModel,
-            peerIdentityStore: peerIdentityStore,
-            locationPresenceStore: locationPresenceStore
+            peerIdentityStore: peerIdentityStore
         )
         self.appChromeModel = AppChromeModel(
             chatViewModel: self.chatViewModel,
@@ -97,17 +85,16 @@ final class AppRuntime: ObservableObject {
                     let key = chatViewModel.meshService.noiseSigningPublicKeyData()
                     return !key.isEmpty && key == post.authorSigningKey
                 },
-                emitSystemLine: { content, geohash in
-                    if geohash.isEmpty {
-                        chatViewModel.addMeshOnlySystemMessage(content)
-                    } else {
-                        chatViewModel.addGeohashSystemMessage(content, geohash: geohash)
-                    }
+                emitSystemLine: { content, _ in
+                    chatViewModel.addMeshOnlySystemMessage(content)
                 }
             )
         )
 
-        GeoRelayDirectory.shared.prefetchIfNeeded()
+        if let roomId {
+            self.historyBridge = RoomHistoryBridge(conversations: conversations, history: RoomHistoryStore(), roomId: roomId)
+        }
+
         bindRuntimeObservers()
         NotificationDelegate.shared.runtime = self
     }
@@ -126,16 +113,11 @@ final class AppRuntime: ObservableObject {
         Task(priority: .utility) { [weak self] in
             guard let self else { return }
             let nickname = await MainActor.run { self.chatViewModel.nickname }
-            let npub = await MainActor.run {
-                try? self.idBridge.getCurrentNostrIdentity()?.npub
-            }
             await MainActor.run {
-                _ = VerificationService.shared.buildMyQRString(nickname: nickname, npub: npub)
+                _ = VerificationService.shared.buildMyQRString(nickname: nickname, npub: nil)
             }
         }
 
-        NetworkActivationService.shared.start()
-        GeohashPresenceService.shared.start()
         checkForSharedContent()
 
         record(.launched)
@@ -170,15 +152,12 @@ final class AppRuntime: ObservableObject {
             record(.scenePhaseChanged(.background))
             TorManager.shared.setAppForeground(false)
             TorManager.shared.goDormantOnBackground()
-            chatViewModel.endGeohashSampling()
-            NostrRelayManager.shared.disconnect()
             didEnterBackground = true
 
         case .active:
             record(.scenePhaseChanged(.active))
             chatViewModel.meshService.startServices()
             TorManager.shared.setAppForeground(true)
-            let shouldRefreshNostrConnections = didHandleInitialActive && didEnterBackground
 
             if didHandleInitialActive && didEnterBackground {
                 if TorManager.shared.isAutoStartAllowed() && !TorManager.shared.isReady {
@@ -189,16 +168,6 @@ final class AppRuntime: ObservableObject {
             }
 
             didEnterBackground = false
-
-            if shouldRefreshNostrConnections && TorManager.shared.isAutoStartAllowed() {
-                Task.detached {
-                    let _ = await TorManager.shared.awaitReady(timeout: 60)
-                    await MainActor.run {
-                        TorURLSession.shared.rebuild()
-                        NostrRelayManager.shared.resetAllConnections()
-                    }
-                }
-            }
 
             chatViewModel.handleDidBecomeActive()
             checkForSharedContent()
@@ -249,27 +218,12 @@ final class AppRuntime: ObservableObject {
             return [.banner, .sound]
         }
 
-        if identifier.hasPrefix("geo-activity-"),
-           let deepLink = userInfo["deeplink"] as? String,
-           let geohash = deepLink.components(separatedBy: "/").last,
-           case .location(let channel) = locationChannelsModel.selectedChannel,
-           channel.geohash == geohash {
-            return []
-        }
-
         return [.banner, .sound]
     }
 }
 
 private extension AppRuntime {
     func bindRuntimeObservers() {
-        NostrRelayManager.shared.$isConnected
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isConnected in
-                self?.handleNostrRelayConnectionChanged(isConnected)
-            }
-            .store(in: &cancellables)
-
         NotificationCenter.default.publisher(for: .TorWillRestart)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
@@ -353,50 +307,17 @@ private extension AppRuntime {
         record(.sharedContentAccepted(contentKind))
     }
 
-    func handleNostrRelayConnectionChanged(_ isConnected: Bool) {
-        record(.nostrRelayConnectionChanged(isConnected))
-
-        let becameConnected = isConnected && !lastNostrRelayConnectedState
-        lastNostrRelayConnectedState = isConnected
-
-        guard started, becameConnected else { return }
-
-        let isInitialConnection = !didHandleInitialNostrConnection
-        didHandleInitialNostrConnection = true
-
-        if !chatViewModel.nostrHandlersSetup {
-            chatViewModel.setupNostrMessageHandling()
-            chatViewModel.nostrHandlersSetup = true
-        }
-
-        guard !isInitialConnection else { return }
-
-        chatViewModel.resubscribeCurrentGeohash()
-        chatViewModel.geoChannelCoordinator?.refreshSampling()
-    }
-
     func announceInitialTorStatusIfNeeded() {
         if TorManager.shared.torEnforced &&
             !chatViewModel.torStatusAnnounced &&
             TorManager.shared.isAutoStartAllowed() {
             chatViewModel.torStatusAnnounced = true
-            chatViewModel.addGeohashOnlySystemMessage(
-                String(localized: "system.tor.starting", comment: "System message when Tor is starting")
-            )
         } else if !TorManager.shared.torEnforced && !chatViewModel.torStatusAnnounced {
             chatViewModel.torStatusAnnounced = true
-            chatViewModel.addGeohashOnlySystemMessage(
-                String(localized: "system.tor.dev_bypass", comment: "System message when Tor bypass is enabled in development")
-            )
         }
     }
 
     func handleScreenshotCaptured() {
-        if appChromeModel.isLocationChannelsSheetPresented {
-            appChromeModel.triggerScreenshotPrivacyWarning()
-            return
-        }
-
         if appChromeModel.isAppInfoPresented {
             return
         }

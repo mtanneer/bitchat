@@ -158,7 +158,6 @@ enum ContentNormalizer {
 // MARK: - Message Deduplication Service
 
 /// Service that manages message deduplication using LRU caches.
-/// Provides separate caches for content-based dedup and Nostr event ID dedup.
 /// Thread-safe via @MainActor - all callers are already on main actor.
 @MainActor
 final class MessageDeduplicationService {
@@ -166,43 +165,12 @@ final class MessageDeduplicationService {
     /// Cache for content-based near-duplicate detection
     private let contentCache: LRUDeduplicationCache<Date>
 
-    /// Cache for Nostr event ID deduplication
-    private let nostrEventCache: LRUDeduplicationCache<Bool>
-
-    /// Cache for Nostr ACK deduplication (messageId:ackType:senderPubkey format)
-    private let nostrAckCache: LRUDeduplicationCache<Bool>
-
-    /// Optional cross-launch persistence for the Nostr event cache. NIP-59
-    /// randomizes gift-wrap timestamps, so DM subscriptions look back 24h and
-    /// relays redeliver the same events on every launch; without this record
-    /// each relaunch reprocesses old PMs and acks. Nil (tests, macOS callers
-    /// that don't opt in) keeps the cache purely in-memory.
-    private let nostrEventStore: NostrProcessedEventStore?
-    private let nostrEventCapacity: Int
-    private var persistScheduled = false
-    private var pendingPersistIDs: [String] = []
-
     /// Creates a new deduplication service with specified capacities.
-    /// - Parameters:
-    ///   - contentCapacity: Max entries for content cache
-    ///   - nostrEventCapacity: Max entries for Nostr event cache
-    ///   - nostrEventStore: Optional disk store preloading and persisting
-    ///     processed Nostr event IDs across launches
+    /// - Parameter contentCapacity: Max entries for content cache
     init(
-        contentCapacity: Int = TransportConfig.contentLRUCap,
-        nostrEventCapacity: Int = TransportConfig.uiProcessedNostrEventsCap,
-        nostrEventStore: NostrProcessedEventStore? = nil
+        contentCapacity: Int = TransportConfig.contentLRUCap
     ) {
         self.contentCache = LRUDeduplicationCache(capacity: contentCapacity)
-        self.nostrEventCache = LRUDeduplicationCache(capacity: nostrEventCapacity)
-        self.nostrAckCache = LRUDeduplicationCache(capacity: nostrEventCapacity)
-        self.nostrEventStore = nostrEventStore
-        self.nostrEventCapacity = nostrEventCapacity
-        if let nostrEventStore {
-            for eventID in nostrEventStore.load() {
-                nostrEventCache.record(eventID, value: true)
-            }
-        }
     }
 
     // MARK: - Content Deduplication
@@ -256,79 +224,10 @@ final class MessageDeduplicationService {
         contentCache.remove(key)
     }
 
-    // MARK: - Nostr Event Deduplication
-
-    /// Checks if a Nostr event has already been processed.
-    /// - Parameter eventId: The event ID
-    /// - Returns: true if already processed
-    func hasProcessedNostrEvent(_ eventId: String) -> Bool {
-        nostrEventCache.contains(eventId)
-    }
-
-    /// Records a Nostr event as processed.
-    /// - Parameter eventId: The event ID
-    func recordNostrEvent(_ eventId: String) {
-        nostrEventCache.record(eventId, value: true)
-        if nostrEventStore != nil {
-            pendingPersistIDs.append(eventId)
-            schedulePersistIfNeeded()
-        }
-    }
-
-    /// Debounced persistence: bursts of inbound events (reconnect redelivery)
-    /// collapse into one append. Append-merge rather than snapshot, so a
-    /// transient in-memory clear between flushes can't shrink the disk record.
-    private func schedulePersistIfNeeded() {
-        guard let nostrEventStore, !persistScheduled else { return }
-        persistScheduled = true
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            guard let self else { return }
-            self.persistScheduled = false
-            let newIDs = self.pendingPersistIDs
-            self.pendingPersistIDs.removeAll()
-            nostrEventStore.append(newIDs, cap: self.nostrEventCapacity)
-        }
-    }
-
-    // MARK: - Nostr ACK Deduplication
-
-    /// Checks if a Nostr ACK has already been processed.
-    /// - Parameter ackKey: The ACK key in format "messageId:ackType:senderPubkey"
-    /// - Returns: true if already processed
-    func hasProcessedNostrAck(_ ackKey: String) -> Bool {
-        nostrAckCache.contains(ackKey)
-    }
-
-    /// Records a Nostr ACK as processed.
-    /// - Parameter ackKey: The ACK key in format "messageId:ackType:senderPubkey"
-    func recordNostrAck(_ ackKey: String) {
-        nostrAckCache.record(ackKey, value: true)
-    }
-
-    /// Creates an ACK key from components.
-    static func ackKey(messageId: String, ackType: String, senderPubkey: String) -> String {
-        "\(messageId):\(ackType):\(senderPubkey)"
-    }
-
     // MARK: - Clear
 
-    /// Clears all caches. This is the wipe/panic path: the persisted
-    /// gift-wrap record goes with everything else.
+    /// Clears all caches. This is the wipe/panic path.
     func clearAll() {
         contentCache.clear()
-        nostrEventCache.clear()
-        nostrAckCache.clear()
-        pendingPersistIDs.removeAll()
-        nostrEventStore?.wipe()
-    }
-
-    /// Clears only the in-memory Nostr caches (events and ACKs). Runs on
-    /// every geohash channel switch, so the disk record deliberately
-    /// survives — wiping it here would forfeit cross-launch gift-wrap dedup
-    /// each time the user changes channels (flagged by Codex on #1398).
-    func clearNostrCaches() {
-        nostrEventCache.clear()
-        nostrAckCache.clear()
     }
 }

@@ -10,6 +10,15 @@ struct BLEPeripheralLinkState {
     var isConnected: Bool
     var lastConnectionAttempt: Date?
     var assembler: NotificationStreamAssembler
+    /// Non-nil once this link's L2CAP channel is open — set for peers
+    /// speaking Android's PSM-then-L2CAP dialect instead of iOS/bitchat's
+    /// GATT-direct one (see BLEService's PSM characteristic detection).
+    var l2capChannel: CBL2CAPChannel?
+    /// True from the moment the PSM characteristic is found (instead of the
+    /// direct-chat one) until its read completes and openL2CAPChannel(_:) is
+    /// called — lets didUpdateValueFor(_:) know this value update is a PSM
+    /// number, not chat bytes.
+    var pendingPSMRead: Bool
 }
 
 struct BLEDirectLinkState: Equatable {
@@ -113,7 +122,9 @@ final class BLELinkStateStore {
                 isConnecting: true,
                 isConnected: false,
                 lastConnectionAttempt: date,
-                assembler: NotificationStreamAssembler()
+                assembler: NotificationStreamAssembler(),
+                l2capChannel: nil,
+                pendingPSMRead: false
             ),
             for: peripheral.identifier.uuidString
         )
@@ -133,7 +144,9 @@ final class BLELinkStateStore {
                     isConnecting: false,
                     isConnected: true,
                     lastConnectionAttempt: nil,
-                    assembler: NotificationStreamAssembler()
+                    assembler: NotificationStreamAssembler(),
+                    l2capChannel: nil,
+                    pendingPSMRead: false
                 ),
                 for: peripheralID
             )

@@ -1,7 +1,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 struct NotificationStreamAssemblerTests {
     private func makePacket(timestamp: UInt64 = 0x0102030405) -> BitchatPacket {

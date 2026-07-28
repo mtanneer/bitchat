@@ -11,11 +11,42 @@ import UserNotifications
 
 @main
 struct BitchatApp: App {
-    static let bundleID = Bundle.main.bundleIdentifier ?? "chat.bitchat"
+    static let bundleID = Bundle.main.bundleIdentifier ?? "com.planechat.ios"
     static let groupID = "group.\(bundleID)"
 
-    @StateObject private var runtime: AppRuntime
+    @StateObject private var roomStore = RoomStore()
     @AppStorage(AppTheme.storageKey) private var appThemeRawValue = AppTheme.matrix.rawValue
+
+    init() {
+        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            Group {
+                if let session = roomStore.activeSession {
+                    RoomRuntimeView(session: session, roomStore: roomStore)
+                } else {
+                    HomeView()
+                }
+            }
+            .environment(\.appTheme, AppTheme(rawValue: appThemeRawValue) ?? .matrix)
+            .environmentObject(roomStore)
+        }
+        #if os(macOS)
+        .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentSize)
+        #endif
+    }
+}
+
+/// Builds `AppRuntime` (and with it `ChatViewModel`/`BLEService`) only once a
+/// room is chosen, scoped to that room's `roomId` — see RoomStore.swift.
+private struct RoomRuntimeView: View {
+    let session: ActiveRoomSession
+    @ObservedObject var roomStore: RoomStore
+    @StateObject private var runtime: AppRuntime
+    @State private var showChat = false
     #if os(iOS)
     @Environment(\.scenePhase) var scenePhase
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -23,48 +54,53 @@ struct BitchatApp: App {
     @NSApplicationDelegateAdaptor(MacAppDelegate.self) var appDelegate
     #endif
 
-    init() {
-        _runtime = StateObject(wrappedValue: AppRuntime())
-        UNUserNotificationCenter.current().delegate = NotificationDelegate.shared
+    init(session: ActiveRoomSession, roomStore: RoomStore) {
+        self.session = session
+        self.roomStore = roomStore
+        _runtime = StateObject(wrappedValue: AppRuntime(roomId: session.roomId))
     }
 
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-                .environment(\.appTheme, AppTheme(rawValue: appThemeRawValue) ?? .matrix)
-                .environmentObject(runtime.publicChatModel)
-                .environmentObject(runtime.privateInboxModel)
-                .environmentObject(runtime.privateConversationModel)
-                .environmentObject(runtime.verificationModel)
-                .environmentObject(runtime.conversationUIModel)
-                .environmentObject(runtime.locationChannelsModel)
-                .environmentObject(runtime.peerListModel)
-                .environmentObject(runtime.appChromeModel)
-                .environmentObject(runtime.boardAlertsModel)
-                .onAppear {
-                    appDelegate.runtime = runtime
-                    runtime.start()
-                }
-                .onOpenURL { url in
-                    runtime.handleOpenURL(url)
-                }
-                #if os(iOS)
-                .onChange(of: scenePhase) { newPhase in
-                    runtime.handleScenePhaseChange(newPhase)
-                }
-                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-                    runtime.handleDidBecomeActiveNotification()
-                }
-                #elseif os(macOS)
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                    runtime.handleMacDidBecomeActiveNotification()
-                }
-                #endif
+    var body: some View {
+        Group {
+            if showChat {
+                ContentView()
+                    .overlay(alignment: .topTrailing) {
+                        LeaveRoomControl(session: session, roomStore: roomStore)
+                    }
+            } else {
+                LobbyView(roomName: session.roomName, onEnterChat: { showChat = true })
+                    .overlay(alignment: .topTrailing) {
+                        LeaveRoomControl(session: session, roomStore: roomStore)
+                    }
+            }
         }
-        #if os(macOS)
-        .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        #endif
+            .environmentObject(runtime.publicChatModel)
+            .environmentObject(runtime.privateInboxModel)
+            .environmentObject(runtime.privateConversationModel)
+            .environmentObject(runtime.verificationModel)
+            .environmentObject(runtime.conversationUIModel)
+            .environmentObject(runtime.peerListModel)
+            .environmentObject(runtime.appChromeModel)
+            .environmentObject(runtime.boardAlertsModel)
+            .onAppear {
+                appDelegate.runtime = runtime
+                runtime.start()
+            }
+            .onOpenURL { url in
+                runtime.handleOpenURL(url)
+            }
+            #if os(iOS)
+            .onChange(of: scenePhase) { newPhase in
+                runtime.handleScenePhaseChange(newPhase)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                runtime.handleDidBecomeActiveNotification()
+            }
+            #elseif os(macOS)
+            .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                runtime.handleMacDidBecomeActiveNotification()
+            }
+            #endif
     }
 }
 

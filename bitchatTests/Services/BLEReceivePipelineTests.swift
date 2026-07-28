@@ -1,7 +1,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("BLE receive pipeline tests")
 struct BLEReceivePipelineTests {

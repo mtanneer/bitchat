@@ -1,7 +1,7 @@
 import BitFoundation
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("BLE ingress packet guard tests")
 struct BLEIngressPacketGuardTests {

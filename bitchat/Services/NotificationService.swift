@@ -91,9 +91,9 @@ private struct NoopNotificationCategoryRegistrar: NotificationCategoryRegisterin
 final class NotificationService {
     static let shared = NotificationService()
 
-    /// Category for the "bitchatters nearby" notification, carrying the wave quick action.
-    static let nearbyCategoryID = "chat.bitchat.category.nearby"
-    static let waveActionID = "chat.bitchat.action.wave"
+    /// Category for the "PlaneChat friends nearby" notification, carrying the wave quick action.
+    static let nearbyCategoryID = "chat.planechat.category.nearby"
+    static let waveActionID = "chat.planechat.action.wave"
 
     private let isRunningTestsProvider: () -> Bool
     private let authorizer: NotificationAuthorizing
@@ -223,7 +223,7 @@ final class NotificationService {
     }
 
     func sendNetworkAvailableNotification(peerCount: Int) {
-        let title = "👥 bitchatters nearby!"
+        let title = "👥 PlaneChat friends nearby!"
         let body = peerCount == 1 ? "1 person around" : "\(peerCount) people around"
         // Fixed identifier so iOS updates the existing notification instead of creating new ones
         let identifier = "network-available"

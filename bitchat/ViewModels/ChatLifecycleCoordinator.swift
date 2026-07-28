@@ -26,8 +26,6 @@ protocol ChatLifecycleContext: AnyObject {
     var sentReadReceipts: Set<String> { get }
     var nickname: String { get }
     var myPeerID: PeerID { get }
-    var activeChannel: ChannelID { get }
-    var nostrKeyMapping: [PeerID: String] { get }
     /// Records that a read receipt is being sent for `messageID`.
     /// Returns `false` when one was already recorded — the caller must skip sending.
     @discardableResult
@@ -56,12 +54,6 @@ protocol ChatLifecycleContext: AnyObject {
     @discardableResult
     func routeReadReceipt(_ receipt: ReadReceipt, to peerID: PeerID) -> Bool
     func sendMeshMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date)
-    func sendGeohashReadReceipt(_ messageID: String, toRecipientHex recipientHex: String, from identity: NostrIdentity)
-
-    // MARK: Nostr & geohash
-    var isTeleported: Bool { get }
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity
-    func recordGeoParticipant(pubkeyHex: String)
 
     // MARK: Favorites (shared with `ChatPrivateConversationContext`)
     /// The persisted favorite relationship for the peer's Noise static key, if any.
@@ -78,13 +70,11 @@ protocol ChatLifecycleContext: AnyObject {
 extension ChatViewModel: ChatLifecycleContext {
     // `messages`, `privateMessages(for:)`, `unreadPrivateMessages`,
     // `selectedPrivateChatPeer`, `sentReadReceipts`, `nickname`, `myPeerID`,
-    // `activeChannel`, `nostrKeyMapping`, `markReadReceiptSent(_:)`,
+    // `markReadReceiptSent(_:)`,
     // `markPrivateMessagesAsRead(from:)`, `appendPrivateMessage(_:to:)`,
     // `markPrivateChatRead(_:)`, `addSystemMessage(_:)`,
     // `peerNickname(for:)`, `unifiedPeer(for:)`, `noiseSessionState(for:)`,
-    // the routing/ack members, `isTeleported`,
-    // `deriveNostrIdentity(forGeohash:)`, `recordGeoParticipant(pubkeyHex:)`,
-    // and `favoriteRelationship(forNoiseKey:)`
+    // the routing/ack members, and `favoriteRelationship(forNoiseKey:)`
     // are shared requirements with the other contexts or satisfied by
     // existing `ChatViewModel` members. The members below flatten nested
     // service accesses into intent-named calls.
@@ -154,21 +144,12 @@ final class ChatLifecycleCoordinator {
             return
         }
 
-        switch context.activeChannel {
-        case .mesh:
-            context.sendMeshMessage(
-                screenshotMessage,
-                mentions: [],
-                messageID: UUID().uuidString,
-                timestamp: Date()
-            )
-
-        case .location(let channel):
-            sendPublicGeohashScreenshotMessage(
-                screenshotMessage,
-                channel: channel
-            )
-        }
+        context.sendMeshMessage(
+            screenshotMessage,
+            mentions: [],
+            messageID: UUID().uuidString,
+            timestamp: Date()
+        )
 
         context.addSystemMessage("you took a screenshot")
     }
@@ -192,28 +173,6 @@ final class ChatLifecycleCoordinator {
         // one. This guard makes that explicit so a future refactor of the
         // receipt matching can't silently start leaking receipts into groups.
         guard !peerID.isGroup else { return }
-
-        if peerID.isGeoDM,
-           let recipientHex = context.nostrKeyMapping[peerID],
-           case .location(let channel) = context.activeChannel,
-           let identity = try? context.deriveNostrIdentity(forGeohash: channel.geohash) {
-            let messages = context.privateMessages(for: peerID)
-            for message in messages where message.senderPeerID == peerID && !message.isRelay {
-                guard !context.sentReadReceipts.contains(message.id) else { continue }
-
-                SecureLogger.debug(
-                    "GeoDM: sending READ for mid=\(message.id.prefix(8))… to=\(recipientHex.prefix(8))…",
-                    category: .session
-                )
-                context.sendGeohashReadReceipt(
-                    message.id,
-                    toRecipientHex: recipientHex,
-                    from: identity
-                )
-                context.markReadReceiptSent(message.id)
-            }
-            return
-        }
 
         var noiseKeyHex: PeerID?
 
@@ -327,37 +286,6 @@ private extension ChatLifecycleCoordinator {
         )
 
         context.appendPrivateMessage(notice, to: peerID)
-    }
-
-    func sendPublicGeohashScreenshotMessage(_ message: String, channel: GeohashChannel) {
-        Task { @MainActor [weak context = self.context] in
-            guard let context else { return }
-
-            do {
-                let identity = try context.deriveNostrIdentity(forGeohash: channel.geohash)
-                let event = try await NostrProtocol.createMinedEphemeralGeohashEvent(
-                    content: message,
-                    geohash: channel.geohash,
-                    senderIdentity: identity,
-                    nickname: context.nickname,
-                    teleported: context.isTeleported
-                )
-
-                let targetRelays = GeoRelayDirectory.shared.closestRelays(toGeohash: channel.geohash, count: 5)
-                if targetRelays.isEmpty {
-                    SecureLogger.warning("Geo: no geohash relays available for \(channel.geohash); not sending", category: .session)
-                } else {
-                    NostrRelayManager.shared.sendEvent(event, to: targetRelays)
-                }
-
-                context.recordGeoParticipant(pubkeyHex: identity.publicKeyHex)
-            } catch {
-                SecureLogger.error("❌ Failed to send geohash screenshot message: \(error)", category: .session)
-                context.addSystemMessage(
-                    String(localized: "system.location.send_failed", comment: "System message when a location channel send fails")
-                )
-            }
-        }
     }
 
     func deliveryStatusRank(_ status: DeliveryStatus?) -> Int {

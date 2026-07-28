@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 @testable import BitFoundation // to avoid unnecessary public's
-@testable import bitchat
+@testable import PlaneChat
 
 final class BinaryEncodingUtilsTests: XCTestCase {
     func test_appendAndReadPrimitiveValues_roundTrip() throws {

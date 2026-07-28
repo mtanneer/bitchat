@@ -18,7 +18,7 @@
 import Testing
 import Foundation
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 // MARK: - Mock Context
 
@@ -38,8 +38,6 @@ private final class MockChatLifecycleContext: ChatLifecycleContext {
     var sentReadReceipts: Set<String> = []
     var nickname = "me"
     var myPeerID = PeerID(str: "0011223344556677")
-    var activeChannel: ChannelID = .mesh
-    var nostrKeyMapping: [PeerID: String] = [:]
     private(set) var ownerLevelReadPasses: [PeerID] = []
     private(set) var managerReadMarks: [PeerID] = []
     private(set) var systemMessages: [String] = []
@@ -100,7 +98,6 @@ private final class MockChatLifecycleContext: ChatLifecycleContext {
     private(set) var routedPrivateMessages: [(content: String, peerID: PeerID, recipientNickname: String)] = []
     private(set) var routedReadReceipts: [(messageID: String, peerID: PeerID)] = []
     private(set) var meshBroadcasts: [String] = []
-    private(set) var geoReadReceipts: [(messageID: String, recipientHex: String)] = []
 
     func routePrivateMessage(_ content: String, to peerID: PeerID, recipientNickname: String, messageID: String) {
         routedPrivateMessages.append((content, peerID, recipientNickname))
@@ -115,17 +112,6 @@ private final class MockChatLifecycleContext: ChatLifecycleContext {
     func sendMeshMessage(_ content: String, mentions: [String], messageID: String, timestamp: Date) {
         meshBroadcasts.append(content)
     }
-
-    func sendGeohashReadReceipt(_ messageID: String, toRecipientHex recipientHex: String, from identity: NostrIdentity) {
-        geoReadReceipts.append((messageID, recipientHex))
-    }
-
-    // Nostr & geohash
-    var isTeleported = false
-    private(set) var recordedGeoParticipants: [String] = []
-
-    func deriveNostrIdentity(forGeohash geohash: String) throws -> NostrIdentity { Self.dummyIdentity }
-    func recordGeoParticipant(pubkeyHex: String) { recordedGeoParticipants.append(pubkeyHex) }
 
     // Favorites
     var favoriteRelationshipsByNoiseKey: [Data: FavoritesPersistenceService.FavoriteRelationship] = [:]
@@ -145,27 +131,18 @@ private final class MockChatLifecycleContext: ChatLifecycleContext {
         verifyIdentityKeyExistsCount += 1
         return true
     }
-
-    static let dummyIdentity = NostrIdentity(
-        privateKey: Data(repeating: 0x11, count: 32),
-        publicKey: Data(repeating: 0x22, count: 32),
-        npub: "npub1mock",
-        createdAt: Date(timeIntervalSince1970: 0)
-    )
 }
 
 // MARK: - Helpers
 
 private func makeFavoriteRelationship(
     noiseKey: Data,
-    nostrPublicKey: String? = nil,
     nickname: String = "alice",
     isFavorite: Bool = false,
     theyFavoritedUs: Bool = false
 ) -> FavoritesPersistenceService.FavoriteRelationship {
     FavoritesPersistenceService.FavoriteRelationship(
         peerNoisePublicKey: noiseKey,
-        peerNostrPublicKey: nostrPublicKey,
         peerNickname: nickname,
         isFavorite: isFavorite,
         theyFavoritedUs: theyFavoritedUs,
@@ -232,35 +209,6 @@ struct ChatLifecycleCoordinatorContextTests {
         // getMessages(for: nil) falls back to the public timeline.
         context.messages = [makePrivateMessage(id: "pub")]
         #expect(coordinator.getMessages(for: nil).map(\.id) == ["pub"])
-    }
-
-    @Test @MainActor
-    func markPrivateMessagesAsRead_geoDM_sendsReadReceiptsOnce() async {
-        let context = MockChatLifecycleContext()
-        let coordinator = ChatLifecycleCoordinator(context: context)
-        let convKey = PeerID(nostr_: "feedface00112233")
-        let recipientHex = "feedface00112233"
-        context.activeChannel = .location(GeohashChannel(level: .city, geohash: "u4pruy"))
-        context.nostrKeyMapping[convKey] = recipientHex
-        context.sentReadReceipts = ["already-acked"]
-        context.privateChats[convKey] = [
-            makePrivateMessage(id: "m1", senderPeerID: convKey),
-            makePrivateMessage(id: "already-acked", senderPeerID: convKey),
-            makePrivateMessage(id: "relay", senderPeerID: convKey, isRelay: true),
-            makePrivateMessage(id: "mine", sender: "me", senderPeerID: context.myPeerID)
-        ]
-
-        coordinator.markPrivateMessagesAsRead(from: convKey)
-
-        #expect(context.managerReadMarks == [convKey])
-        // Only the peer's own un-acked, non-relay message gets a READ.
-        #expect(context.geoReadReceipts.map(\.messageID) == ["m1"])
-        #expect(context.geoReadReceipts.first?.recipientHex == recipientHex)
-        #expect(context.sentReadReceipts.contains("m1"))
-
-        // Second pass: nothing new to send.
-        coordinator.markPrivateMessagesAsRead(from: convKey)
-        #expect(context.geoReadReceipts.count == 1)
     }
 
     @Test @MainActor
@@ -336,8 +284,7 @@ struct ChatLifecycleCoordinatorContextTests {
         let noiseKey = Data(repeating: 0xAB, count: 32)
         let peerID = PeerID(hexData: noiseKey)
         context.favoriteRelationshipsByNoiseKey[noiseKey] = makeFavoriteRelationship(
-            noiseKey: noiseKey,
-            nostrPublicKey: "npub1alice"
+            noiseKey: noiseKey
         )
         context.privateChats[peerID] = [
             makePrivateMessage(id: "in-1", senderPeerID: peerID),

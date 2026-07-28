@@ -8,7 +8,7 @@
 
 import Foundation
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @MainActor
 private final class StubPTTCapture: PTTCapturing {

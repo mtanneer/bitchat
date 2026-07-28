@@ -3,7 +3,7 @@ import Foundation
 import Combine
 import CoreBluetooth
 import BitFoundation
-@testable import bitchat
+@testable import PlaneChat
 
 private final class DefaultDelegateProbe: BitchatDelegate {
     func didReceiveMessage(_ message: BitchatMessage) {}

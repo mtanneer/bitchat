@@ -7,7 +7,7 @@
 //
 
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 struct NoiseEncryptionTests {
     @Test func generatesNewIdentityWhenMissing() throws {

@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 import Testing
-@testable import bitchat
+@testable import PlaneChat
 
 @Suite("TransferProgressManager Tests")
 struct TransferProgressManagerTests {
